@@ -2110,7 +2110,6 @@ function Library:CreateWindow(opts)
 	self.Main = main
 	Util.corner(main, 6)
 	Util.stroke(main, Theme.Border, 3.5)
-	self._openScale = Util.new("UIScale", { Name = "OpenScale", Parent = main })
 
 	-- Header: purple gradient, top highlight, fading checker, logo on a rotating sunburst, title and subtitle.
 	local header = Util.new("Frame", {
@@ -2335,10 +2334,9 @@ function Library:CreateWindow(opts)
 		image.Rotation = (image.Rotation + 20 * deltaTime) % 360
 	end))
 
-	-- Intro: pops in from the centre with a Back overshoot.
-	self._openScale.Scale = 0.6
-	main.BackgroundTransparency = 0
-	Util.tween(self._openScale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+	-- Intro: the same short slide as opening (no scaling of the whole window).
+	main.Position = UDim2.new(0.5, 0, 0.5, 18)
+	Util.tween(main, 0.2, { Position = UDim2.fromScale(0.5, 0.5) })
 	return self
 end
 
@@ -2355,26 +2353,23 @@ function Window:Toggle(open)
 	self.Visible = open
 	self._toggleId = (self._toggleId or 0) + 1
 	local id = self._toggleId
+	-- Open / close slide the window a few pixels at its final size (and fade the shadow). Scaling the whole window
+	-- re-laid-out and re-rasterized every text in it each frame, which is what dropped frames on open.
+	local rest, below = UDim2.fromScale(0.5, 0.5), UDim2.new(0.5, 0, 0.5, 18)
 	if open then
 		self.OpenButton.Visible = false
-		self.Root.Visible = true
-		self._openScale.Scale = 0.7
+		self.Main.Position = below
 		self.Shadow.ImageTransparency = 1
-		Util.tween(self._openScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-		Util.tween(self.Shadow, 0.35, { ImageTransparency = 0.45 })
+		self.Root.Visible = true
+		Util.tween(self.Main, 0.18, { Position = rest })
+		Util.tween(self.Shadow, 0.18, { ImageTransparency = 0.45 })
 	else
-		Util.tween(self._openScale, 0.18, { Scale = 0.7 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		Util.tween(self.Shadow, 0.15, { ImageTransparency = 1 })
-		task.delay(0.18, function()
+		Util.tween(self.Main, 0.14, { Position = below }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		Util.tween(self.Shadow, 0.14, { ImageTransparency = 1 })
+		task.delay(0.14, function()
 			if self._toggleId == id and not self.Visible then
 				self.Root.Visible = false
 				self.OpenButton.Visible = true
-				local scale = self.OpenButton:FindFirstChildWhichIsA("ImageButton", true)
-				local buttonScale = scale and scale:FindFirstChild("ButtonScale")
-				if buttonScale then
-					buttonScale.Scale = 0.5
-					Util.tween(buttonScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-				end
 			end
 		end)
 	end
