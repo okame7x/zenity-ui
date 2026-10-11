@@ -159,17 +159,26 @@ function Util.text(parent, props)
 		Position = props.Position or UDim2.new(),
 		AnchorPoint = props.AnchorPoint or Vector2.zero,
 		AutomaticSize = props.AutomaticSize or Enum.AutomaticSize.None,
+		AutoLocalize = false,
 		ZIndex = props.ZIndex or 1,
 		Parent = parent,
 	})
+	-- Outline: a UIStroke only on big titles (18px+); everything else uses the text's own legacy stroke, which costs
+	-- nothing to render (hundreds of UIStrokes were what made opening the window drop frames).
 	if props.Stroke ~= false then
-		Util.new("UIStroke", {
-			Name = "TextStroke",
-			Color = props.StrokeColor or Theme.Ink,
-			Thickness = props.Stroke or math.clamp(size * 0.085, 1, 2.8),
-			ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
-			Parent = label,
-		})
+		local thickness = props.Stroke or math.clamp(size * 0.085, 1, 2.8)
+		if size >= 18 then
+			Util.new("UIStroke", {
+				Name = "TextStroke",
+				Color = props.StrokeColor or Theme.Ink,
+				Thickness = thickness,
+				ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+				Parent = label,
+			})
+		else
+			label.TextStrokeColor3 = props.StrokeColor or Theme.Ink
+			label.TextStrokeTransparency = thickness >= 1.6 and 0 or 0.35
+		end
 	end
 	return label
 end
@@ -215,19 +224,9 @@ function Util.card(parent, props)
 		Parent = parent,
 	})
 	Util.corner(frame, props.Radius or 4)
+	-- One outline per card (the inner highlight rim was a second frame + stroke on every row: dropped for speed).
 	local outer = Util.stroke(frame, Color3.new(0, 0, 0), props.StrokeThickness or 2.4)
-	local rim = Util.new("Frame", {
-		Name = "Rim",
-		BackgroundTransparency = 1,
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.new(1, -4, 1, -4),
-		ZIndex = frame.ZIndex,
-		Parent = frame,
-	})
-	Util.corner(rim, math.max((props.Radius or 4) - 2, 0))
-	local rimStroke = Util.stroke(rim, props.RimColor or Theme.CardHighlight, 1.2, props.RimTransparency or 0.4)
-	return frame, outer, rimStroke
+	return frame, outer, outer
 end
 
 -- 3D beveled surface (Check-UI button anatomy): gradient face, dark bottom extrusion, pastel inner rim, fading
@@ -257,11 +256,15 @@ function Util.bevel(parent, props)
 		parts.stroke.LineJoinMode = Enum.LineJoinMode.Miter
 	end
 	parts.gradient = Util.gradient(root, palette.Gradient, 90)
-	parts.damier = Util.damier(root, palette.Damier, props.Tile or 18, zIndex, NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(0.45, 0.8),
-		NumberSequenceKeypoint.new(1, 0.55),
-	}))
+	-- The fading checker only where asked (Damier = true: big headers): a tiled image + gradient on every button is
+	-- a real cost once there are dozens of them.
+	if props.Damier then
+		parts.damier = Util.damier(root, palette.Damier, props.Tile or 18, zIndex, NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.45, 0.8),
+			NumberSequenceKeypoint.new(1, 0.55),
+			}))
+	end
 	parts.bevel = Util.new("Frame", {
 		Name = "BottomBevel",
 		BackgroundColor3 = palette.Bevel,
@@ -287,7 +290,9 @@ function Util.bevel(parent, props)
 	-- Minimal (tiny buttons): no inner rim and no checker, which only clutter a 20px face.
 	if props.Minimal then
 		parts.rim.Enabled = false
-		parts.damier.Visible = false
+		if parts.damier then
+			parts.damier.Visible = false
+		end
 	end
 	local iconSize = props.IconSize or 18
 	local textOffset = 0
@@ -334,7 +339,9 @@ function Util.bevel(parent, props)
 		parts.gradient.Color = Util.sequence(newPalette.Gradient)
 		parts.bevel.BackgroundColor3 = newPalette.Bevel
 		parts.rim.Color = newPalette.Rim
-		parts.damier.ImageColor3 = newPalette.Damier
+		if parts.damier then
+			parts.damier.ImageColor3 = newPalette.Damier
+		end
 	end
 	if props.Feedback ~= false then
 		Util.feedback(root, parts.scale, props.Hover, props.Press)
@@ -362,15 +369,42 @@ function Util.feedback(button, scale, hoverFactor, pressFactor)
 	end)
 end
 
-function Util.loadLucide()
-	if Util.lucide ~= nil then
-		return Util.lucide
+-- Lucide icons load in the background (a synchronous HttpGet on the first icon froze the game while the window was
+-- built); icons asked for meanwhile wait in pendingIcons and are filled in once the set arrives.
+Util.pendingIcons = setmetatable({}, { __mode = "k" })
+
+function Util.startLucide()
+	if Util.lucideLoading or Util.lucide ~= nil then
+		return
 	end
-	local ok, result = pcall(function()
-		return loadstring(game:HttpGet(LUCIDE_URL))()
+	Util.lucideLoading = true
+	task.spawn(function()
+		local ok, result = pcall(function()
+			return loadstring(game:HttpGet(LUCIDE_URL))()
+		end)
+		Util.lucide = ok and type(result) == "table" and result or false
+		Util.lucideLoading = false
+		local pending = Util.pendingIcons
+		Util.pendingIcons = setmetatable({}, { __mode = "k" })
+		for label, icon in pending do
+			if label.Parent then
+				Util.icon(label, icon)
+			end
+		end
 	end)
-	Util.lucide = ok and type(result) == "table" and result or false
+end
+
+-- Never blocks: the set once loaded, nil while it is still on its way.
+function Util.loadLucide()
+	if Util.lucide == nil then
+		Util.startLucide()
+		return nil
+	end
 	return Util.lucide
+end
+
+function Util.isLucideName(icon)
+	return type(icon) == "string" and icon ~= "" and not icon:find("^rbx") and not icon:find("^https?://") and not icon:find("%.")
 end
 
 -- Lucide name ("send", "lucide:send"), rbxassetid / http / workspace file, or { Image, RectOffset, RectSize }.
@@ -472,6 +506,13 @@ function Util.savePosition(key, position)
 end
 
 function Util.icon(imageLabel, icon)
+	if Util.isLucideName(icon) and Util.lucide == nil then
+		Util.pendingIcons[imageLabel] = icon
+		Util.startLucide()
+		imageLabel.Image = ""
+		return
+	end
+	Util.pendingIcons[imageLabel] = nil
 	local image, offset, size = Util.resolveIcon(icon)
 	imageLabel.Image = image or ""
 	if offset and size then
@@ -658,12 +699,12 @@ function Container:_row(opts, height, rightReserve)
 	height = height or (hasDesc and ROW_HEIGHT + 14 or ROW_HEIGHT)
 	local frame, _, rim = Util.card(self.List, { Name = opts.Name ~= "" and opts.Name or "Element", Size = UDim2.new(1, 0, 0, height), LayoutOrder = self:_nextOrder() })
 	frame:SetAttribute("NoDrag", true)
-	-- The inner rim lights up purple under the pointer.
+	-- The outline lights up purple under the pointer.
 	frame.MouseEnter:Connect(function()
-		Util.tween(rim, 0.12, { Color = Palettes.Purple.Rim, Transparency = 0.1 })
+		Util.tween(rim, 0.12, { Color = Palettes.Purple.Rim })
 	end)
 	frame.MouseLeave:Connect(function()
-		Util.tween(rim, 0.18, { Color = Theme.CardHighlight, Transparency = 0.4 })
+		Util.tween(rim, 0.18, { Color = Color3.new(0, 0, 0) })
 	end)
 	local title = Util.text(frame, {
 		Name = "Title",
@@ -1178,7 +1219,11 @@ function Container:AddDropdown(idOrOptions, options)
 			Util.corner(root, 4)
 			local bar = Util.new("Frame", { Name = "Accent", BackgroundColor3 = Palettes.Purple.Rim, BorderSizePixel = 0, Position = UDim2.fromOffset(0, 5), Size = UDim2.new(0, 3, 1, -10), Visible = false, ZIndex = 6, Parent = root })
 			Util.corner(bar, 2)
-			Util.text(root, { Name = "Label", Text = tostring(option), TextSize = 13, Stroke = 1.6, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -46, 1, 0), ZIndex = 6 })
+			local optionLabel = Util.text(root, { Name = "Label", Text = tostring(option), TextSize = 13, Stroke = 1.6, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -46, 1, 0), ZIndex = 6 })
+			-- Hook for the host (rarity look, option icons): called once per option instead of watching the window.
+			if type(Library.OptionHook) == "function" then
+				task.defer(Util.safeCall, Library.OptionHook, optionLabel)
+			end
 			-- Multi: a square box; single: a round one.
 			local check = Util.new("Frame", {
 				Name = "Check",
@@ -1498,10 +1543,15 @@ function Container:AddProgress(idOrOptions, options)
 	return self:_handle(frame, element)
 end
 
--- Asset filter shell: title, "N selected" summary, search box and a scroll area. The hub fills the list itself;
--- given Items are drawn as simple rows.
+-- Asset filter: title, "N selected" summary, search box and a list of item cards (icon, name / rarity in the rarity
+-- colour, $/s, a FARM / SKIP chip). Built for hundreds of items: cards are created 16 per frame, laid out at fixed
+-- positions (no UIListLayout / AutomaticSize), kept light (no buttons inside), and only moved by the search.
+-- Items: { Id, Name, Icon, RarityName, RarityColor, Gen }; Selected: the set it reads and writes (shared with the
+-- host); Callback(id, selected). The handle's Render() repaints the chips, Refresh() adds items appended to Items.
 function Container:AddAssetFilter(options)
 	local opts = type(options) == "table" and options or {}
+	local items = type(opts.Items) == "table" and opts.Items or {}
+	local selectedSet = type(opts.Selected) == "table" and opts.Selected or {}
 	local frame = Util.card(self.List, { Name = "AssetFilter", Size = UDim2.new(1, 0, 0, 392), LayoutOrder = self:_nextOrder() })
 	frame:SetAttribute("NoDrag", true)
 	Util.text(frame, { Name = "Title", Text = string.upper(opts.Text or opts.Name or "Items"), TextSize = 15, Position = UDim2.fromOffset(14, 8), Size = UDim2.new(0.5, -14, 0, 24), ZIndex = 2 })
@@ -1544,7 +1594,6 @@ function Container:AddAssetFilter(options)
 		Position = UDim2.fromOffset(12, 76),
 		Size = UDim2.new(1, -24, 1, -88),
 		CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		ScrollBarThickness = 5,
 		ScrollBarImageColor3 = Theme.Accent,
 		ZIndex = 2,
@@ -1553,10 +1602,12 @@ function Container:AddAssetFilter(options)
 	list:SetAttribute("NoDrag", true)
 	Util.corner(list, 4)
 	Util.stroke(list, Color3.new(0, 0, 0), 1.6)
-	Util.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = list })
-	Util.new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 10), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), Parent = list })
-	local selectedSet = type(opts.Selected) == "table" and opts.Selected or {}
+	local holder = Util.new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 6), Size = UDim2.new(1, -16, 0, 0), ZIndex = 2, Parent = list })
+
 	local element = { Type = "AssetFilter", Selected = selectedSet }
+	local rows, built, ROW, GAP = {}, {}, 64, 6
+	local lime, silver = ColorSequence.new(Palettes.Lime.Gradient[1], Palettes.Lime.Gradient[2]), ColorSequence.new(Palettes.Silver.Gradient[1], Palettes.Silver.Gradient[2])
+
 	local function count()
 		local total = 0
 		for _, on in selectedSet do
@@ -1566,53 +1617,105 @@ function Container:AddAssetFilter(options)
 		end
 		summary.Text = total .. " selected"
 	end
-	for index, item in type(opts.Items) == "table" and opts.Items or {} do
-		-- Card per item: icon well, name and rarity in the rarity colour, $/s, and a FARM / SKIP state chip.
+	local function paint(row)
+		local on = selectedSet[row.id] == true
+		row.stroke.Color = on and Palettes.Lime.Gradient[1] or Color3.new(0, 0, 0)
+		row.chipText.Text = on and "FARM" or "SKIP"
+		row.chipGradient.Color = on and lime or silver
+	end
+	-- Stacks the rows matching the search and sizes the canvas.
+	local function layout()
+		local query = search.Text:lower()
+		local y = 0
+		for _, row in rows do
+			local match = query == "" or row.search:find(query, 1, true) ~= nil
+			row.frame.Visible = match
+			if match then
+				if row.y ~= y then
+					row.y = y
+					row.frame.Position = UDim2.fromOffset(0, y)
+				end
+				y += ROW + GAP
+			end
+		end
+		holder.Size = UDim2.new(1, -16, 0, y)
+		list.CanvasSize = UDim2.fromOffset(0, y + 12)
+	end
+	local function buildRow(item)
 		local id = item.Id or item.Name
 		local color = typeof(item.RarityColor) == "Color3" and item.RarityColor or Theme.CardHighlight
-		local row = Util.new("TextButton", { AutoButtonColor = false, BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Text = "", LayoutOrder = index, Size = UDim2.new(1, 0, 0, 64), ZIndex = 3, Parent = list })
-		Util.corner(row, 5)
-		local stroke = Util.stroke(row, Color3.new(0, 0, 0), 2)
-		Util.new("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, color:Lerp(Theme.Card, 0.6)), ColorSequenceKeypoint.new(0.5, Theme.Card), ColorSequenceKeypoint.new(1, Theme.Card) }), Parent = row })
-		local well = Util.new("Frame", { BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(8, 6), Size = UDim2.fromOffset(52, 52), ZIndex = 4, Parent = row })
+		local row = { id = id, search = (tostring(item.Name or "") .. " " .. tostring(id)):lower() }
+		row.frame = Util.new("TextButton", { AutoButtonColor = false, BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Text = "", Size = UDim2.new(1, 0, 0, ROW), ZIndex = 3, Parent = holder })
+		Util.corner(row.frame, 5)
+		row.stroke = Util.stroke(row.frame, Color3.new(0, 0, 0), 2)
+		Util.new("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, color:Lerp(Theme.Card, 0.6)), ColorSequenceKeypoint.new(0.5, Theme.Card), ColorSequenceKeypoint.new(1, Theme.Card) }), Parent = row.frame })
+		local well = Util.new("Frame", { BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(8, 6), Size = UDim2.fromOffset(52, 52), ZIndex = 4, Parent = row.frame })
 		Util.corner(well, 5)
 		Util.stroke(well, color, 1.6)
 		local icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ScaleType = Enum.ScaleType.Fit, ZIndex = 5, Parent = well })
 		Util.icon(icon, item.Icon)
-		Util.text(row, { Name = "Label", Text = tostring(item.Name or id), TextSize = 14, TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.3), Position = UDim2.fromOffset(70, 8), Size = UDim2.new(1, -170, 0, 18), ZIndex = 4 })
-		Util.text(row, { Text = string.upper(tostring(item.RarityName or item.Rarity or "")), TextSize = 10, Stroke = 1.2, TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.15), Position = UDim2.fromOffset(70, 27), Size = UDim2.new(1, -170, 0, 13), ZIndex = 4 })
+		Util.text(row.frame, { Name = "Label", Text = tostring(item.Name or id), TextSize = 14, TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.3), Position = UDim2.fromOffset(70, 8), Size = UDim2.new(1, -170, 0, 18), ZIndex = 4 })
+		Util.text(row.frame, { Text = string.upper(tostring(item.RarityName or item.Rarity or "")), TextSize = 10, Stroke = 1.2, TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.15), Position = UDim2.fromOffset(70, 27), Size = UDim2.new(1, -170, 0, 13), ZIndex = 4 })
 		if item.Gen then
-			Util.text(row, { Text = "$" .. Util.compact(item.Gen) .. "/s", TextSize = 12, Stroke = 1.4, TextColor3 = Palettes.Lime.Gradient[1], Position = UDim2.fromOffset(70, 42), Size = UDim2.new(1, -170, 0, 15), ZIndex = 4 })
+			Util.text(row.frame, { Text = "$" .. Util.compact(item.Gen) .. "/s", TextSize = 12, Stroke = 1.4, TextColor3 = Palettes.Lime.Gradient[1], Position = UDim2.fromOffset(70, 42), Size = UDim2.new(1, -170, 0, 15), ZIndex = 4 })
 		end
-		local chipHolder = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(76, 28), ZIndex = 4, Parent = row })
-		local chip, chipParts = Util.bevel(chipHolder, { Palette = Palettes.Silver, Size = UDim2.fromScale(1, 1), Text = "SKIP", TextSize = 13, ZIndex = 5, Feedback = false, StrokeThickness = 2.2 })
-
-		local function paint()
-			local on = selectedSet[id] == true
-			stroke.Color = on and Palettes.Lime.Gradient[1] or Color3.new(0, 0, 0)
-			chipParts.label.Text = on and "FARM" or "SKIP"
-			chipParts.setPalette(on and Palettes.Lime or Palettes.Silver)
-		end
-		paint()
-		local function flip()
+		-- State chip: a light frame (gradient + outline + dark bevel line) with its text, not a full button.
+		local chip = Util.new("Frame", { AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(76, 28), ZIndex = 4, Parent = row.frame })
+		Util.stroke(chip, Color3.new(0, 0, 0), 2.2).LineJoinMode = Enum.LineJoinMode.Miter
+		row.chipGradient = Util.gradient(chip, Palettes.Silver.Gradient, 90)
+		Util.new("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.6, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -3), Size = UDim2.new(1, 0, 0, 3), ZIndex = 5, Parent = chip })
+		row.chipText = Util.text(chip, { Text = "SKIP", TextSize = 13, Stroke = 2, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, -1), ZIndex = 6 })
+		paint(row)
+		row.frame.MouseButton1Click:Connect(function()
 			selectedSet[id] = not selectedSet[id] or nil
-			paint()
+			paint(row)
 			count()
 			Util.safeCall(opts.Callback, id, selectedSet[id] == true)
+		end)
+		return row
+	end
+	-- Builds every item not built yet, 16 per frame, then lays the list out.
+	local building = false
+	local function buildAll()
+		if building then
+			return
 		end
-		row.MouseButton1Click:Connect(flip)
-		chip.MouseButton1Click:Connect(flip)
-		paint()
+		building = true
+		task.spawn(function()
+			local made = 0
+			for _, item in items do
+				if not built[item] then
+					built[item] = true
+					local ok, row = pcall(buildRow, item)
+					if ok then
+						table.insert(rows, row)
+					end
+					made += 1
+					if made % 16 == 0 then
+						layout()
+						task.wait()
+					end
+				end
+			end
+			building = false
+			layout()
+			count()
+		end)
+	end
+	function element:Render()
+		for _, row in rows do
+			paint(row)
+		end
+		count()
+	end
+	function element:Refresh()
+		buildAll()
 	end
 	search:GetPropertyChangedSignal("Text"):Connect(function()
-		local text = search.Text:lower()
-		for _, row in list:GetChildren() do
-			local label = row:IsA("TextButton") and row:FindFirstChild("Label")
-			if label then
-				row.Visible = text == "" or label.Text:lower():find(text, 1, true) ~= nil
-			end
-		end
+		list.CanvasPosition = Vector2.zero
+		layout()
 	end)
+	buildAll()
 	count()
 	return self:_handle(frame, element)
 end
@@ -1759,12 +1862,6 @@ function Library:CreateWindow(opts)
 	Util.corner(main, 6)
 	Util.stroke(main, Theme.Border, 3.5)
 	self._openScale = Util.new("UIScale", { Name = "OpenScale", Parent = main })
-	-- Canvas checker, very faint, so the slate never reads flat.
-	Util.damier(main, Color3.new(0, 0, 0), 26, 1, NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(0.5, 0.94),
-		NumberSequenceKeypoint.new(1, 0.82),
-	}))
 
 	-- Header: purple gradient, top highlight, fading checker, logo on a rotating sunburst, title and subtitle.
 	local header = Util.new("Frame", {
@@ -2343,12 +2440,13 @@ function Hud.plate(parent, props)
 	})
 	Util.corner(frame, 6)
 	Util.stroke(frame, Theme.Border, 3.2)
-	Util.damier(frame, Color3.new(0, 0, 0), 22, 1, NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.85) }))
 	return frame
 end
 
 -- ============================================================================================================
--- Status HUD: icon or spinning 3D preview, state / tag pills, title, detail or chips, steps or a bar, stat tiles.
+-- Status HUD (compact): a header strip with the stats, a task tile in the grey body (icon or turning 3D preview inside
+-- a ring of progress segments, one simple motion per kind of task), state / tag pills, title, detail or chips, steps
+-- and a thin progress line.
 -- info for status:Set: { Text, Detail, State = "active" | "waiting" | "idle", Tag, Icon, Model,
 --   Chips = { { Text, Colors } }, Steps = { Names, Current }, Bar = { Fraction, Text, Colors } }
 -- ============================================================================================================
@@ -2359,716 +2457,80 @@ function Library:CreateStatus(opts)
 	local connections = status._connections
 	local gui = Util.screen(opts.Name or "BloomStatus", 995)
 	status.Gui = gui
-	local frame = Hud.plate(gui, { AnchorPoint = Vector2.new(0.5, 0), Position = opts.Position or UDim2.new(0.5, 0, 0, 14), Size = UDim2.fromOffset(620, 142) })
+	local home = opts.Position or UDim2.new(0.5, 0, 0, 12)
+	local frame = Hud.plate(gui, { AnchorPoint = Vector2.new(0.5, 0), Position = home, Size = UDim2.fromOffset(470, 104) })
 	status.Frame = frame
 	Util.responsive(Util.new("UIScale", { Parent = frame }), connections)
 
-	-- Purple strip on top: logo, title and the stat tiles.
-	local strip = Util.new("Frame", { Name = "Header", BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 30), ZIndex = 2, ClipsDescendants = true, Parent = frame })
+	-- Header strip: logo, title, the stat pills on the right.
+	local strip = Util.new("Frame", { Name = "Header", BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 24), ZIndex = 2, ClipsDescendants = true, Parent = frame })
 	Util.corner(strip, 6)
 	Util.gradient(strip, Palettes.Purple.Gradient, 90)
-	Util.damier(strip, Palettes.Purple.Damier, 18, 3)
 	Util.new("Frame", { BackgroundColor3 = Palettes.Purple.Gradient[2], BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -6), Size = UDim2.new(1, 0, 0, 6), ZIndex = 2, Parent = strip })
-	Util.new("Frame", { BackgroundColor3 = Palettes.Purple.Dark, BorderSizePixel = 0, Position = UDim2.fromOffset(0, 30), Size = UDim2.new(1, 0, 0, 2), ZIndex = 2, Parent = frame })
-	Util.new("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, Position = UDim2.fromOffset(0, 32), Size = UDim2.new(1, 0, 0, 2), ZIndex = 2, Parent = frame })
-	local logo = Util.new("ImageLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(8, 3), Size = UDim2.fromOffset(24, 24), ScaleType = Enum.ScaleType.Fit, ZIndex = 4, Parent = strip })
+	Util.new("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, Position = UDim2.fromOffset(0, 24), Size = UDim2.new(1, 0, 0, 2), ZIndex = 2, Parent = frame })
+	local logo = Util.new("ImageLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 3), Size = UDim2.fromOffset(18, 18), ScaleType = Enum.ScaleType.Fit, ZIndex = 4, Parent = strip })
 	Util.icon(logo, opts.Logo or Assets.Logo)
-	Util.text(strip, { Text = string.upper(opts.Title or "Zenity Hub"), TextSize = 14, Position = UDim2.fromOffset(38, 0), Size = UDim2.new(0.28, 0, 1, 0), ZIndex = 4 })
-	-- Stat pills on the right of the header strip (TIME, STOLEN, FPS, PING and whatever SetStat adds).
-	local stats = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.new(0.72, -40, 0, 22), ZIndex = 4, Parent = strip })
-	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5), Parent = stats })
-	local startedAt = os.clock()
-	-- Footer: the progress bar on its own recessed strip; shown (and the plate grown) only while there is a bar.
-	local footer = Util.new("Frame", { Name = "Footer", BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 8, 1, -8), Size = UDim2.new(1, -16, 0, 76), Visible = false, ZIndex = 2, Parent = frame })
-	Util.corner(footer, 4)
-	Util.stroke(footer, Color3.new(0, 0, 0), 2)
-
+	Util.text(strip, { Text = string.upper(opts.Title or "Zenity Hub"), TextSize = 12, Position = UDim2.fromOffset(28, 0), Size = UDim2.new(0.3, 0, 1, 0), ZIndex = 4 })
+	local stats = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.new(0.7, -30, 0, 18), ZIndex = 4, Parent = strip })
+	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = stats })
 	Util.drag(strip, frame, connections)
 
-	-- Preview well with the state colour as its rim.
-	local well = Util.new("Frame", { Name = "Well", BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(12, 44), Size = UDim2.fromOffset(80, 80), ZIndex = 2, Parent = frame })
-	Util.corner(well, 6)
-	local wellStroke = Util.stroke(well, Hud.StateColors.idle[1], 2.4)
-	local icon = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, -12, 1, -12), ScaleType = Enum.ScaleType.Fit, ZIndex = 3, Parent = well })
-	local viewport = Util.new("ViewportFrame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false, Ambient = Color3.fromRGB(200, 200, 210), LightColor = Color3.new(1, 1, 1), ZIndex = 3, Parent = well })
+	-- Task tile (the grey body, left): the icon or a turning 3D preview, a ring of progress segments around it,
+	-- and one simple motion per kind of task (bob, shake, pulse, turn...).
+	local tile = Util.new("Frame", { Name = "Tile", BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(10, 32), Size = UDim2.fromOffset(64, 64), ZIndex = 2, Parent = frame })
+	Util.corner(tile, 8)
+	local tileStroke = Util.stroke(tile, Hud.StateColors.idle[1], 2)
+	local segments = {}
+	for index = 1, 20 do
+		local angle = (index - 1) / 20 * math.pi * 2 - math.pi / 2
+		local segment = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(50, 66, 76), BorderSizePixel = 0, Size = UDim2.fromOffset(3, 6), Rotation = math.deg(angle) + 90, Position = UDim2.new(0.5, math.cos(angle) * 27, 0.5, math.sin(angle) * 27), ZIndex = 3, Parent = tile })
+		Util.corner(segment, 2)
+		segments[index] = segment
+	end
+	local holder = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(40, 40), ZIndex = 4, Parent = tile })
+	local holderScale = Util.new("UIScale", { Parent = holder })
+	local icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ScaleType = Enum.ScaleType.Fit, ZIndex = 4, Parent = holder })
+	local viewport = Util.new("ViewportFrame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false, Ambient = Color3.fromRGB(200, 200, 210), LightColor = Color3.new(1, 1, 1), ZIndex = 4, Parent = holder })
 	local camera = Instance.new("Camera")
 	camera.FieldOfView = 40
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
 
-	local pills = Util.new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(104, 42), Size = UDim2.new(1, -116, 0, 22), ZIndex = 2, Parent = frame })
-	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6), Parent = pills })
+	-- Texts (right): state / tag pills, the title, the detail or chips, then steps; a thin progress line at the bottom.
+	local pills = Util.new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(84, 31), Size = UDim2.new(1, -94, 0, 18), ZIndex = 2, Parent = frame })
+	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = pills })
 	local statePill, stateText, stateGradient = Hud.pill(pills, "IDLE", Hud.StateColors.idle, 1)
+	statePill.Size = UDim2.fromOffset(0, 18)
 	local tagPill, tagText = Hud.pill(pills, "", Hud.Bloom, 2)
-	local _ = statePill
-	local title = Util.text(frame, { Name = "Title", TextSize = 17, Position = UDim2.fromOffset(104, 66), Size = UDim2.new(1, -116, 0, 22), ZIndex = 2 })
-	local detail = Util.text(frame, { Name = "Detail", TextSize = 12, Stroke = 1.4, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(104, 88), Size = UDim2.new(1, -116, 0, 16), ZIndex = 2 })
-	local chipRow = Util.new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(104, 86), Size = UDim2.new(1, -116, 0, 22), Visible = false, ZIndex = 2, Parent = frame })
-	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6), Parent = chipRow })
+	tagPill.Size = UDim2.fromOffset(0, 18)
+	local title = Util.text(frame, { Name = "Title", TextSize = 15, Position = UDim2.fromOffset(84, 51), Size = UDim2.new(1, -94, 0, 18), ZIndex = 2 })
+	local detail = Util.text(frame, { Name = "Detail", TextSize = 11, Stroke = 1.2, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(84, 70), Size = UDim2.new(1, -94, 0, 14), ZIndex = 2 })
+	local chipRow = Util.new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(84, 69), Size = UDim2.new(1, -94, 0, 16), Visible = false, ZIndex = 2, Parent = frame })
+	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = chipRow })
 	local chipPool = {}
-	local steps = Util.new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(104, 110), Size = UDim2.new(1, -116, 0, 18), Visible = false, ZIndex = 2, Parent = frame })
-	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6), Parent = steps })
+	local steps = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 31), Size = UDim2.fromOffset(200, 18), Visible = false, ZIndex = 2, Parent = frame })
+	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3), Parent = steps })
 	local stepPool = {}
-	-- Scene stage (the footer): the task's text and percent on top, and under them a small animated scene that is
-	-- different for every kind of task (bar.Style): a segment ring with the studs left, a dotted route home, a
-	-- tethered chase, a chunky race bar, a night sky with a catch ring, an orbit, a garden, a speed gauge, butterflies
-	-- and an hourglass, a music staff, a sunrise, an equalizer, three pulsing dots. Each scene builds its own instances
-	-- and animates them from the eased progress every frame; switching style rebuilds the stage.
-	local barText = Util.text(footer, { TextSize = 11, Stroke = 1.6, Position = UDim2.fromOffset(10, 3), Size = UDim2.new(1, -70, 0, 14), ZIndex = 4 })
-	local percentText = Util.text(footer, { TextSize = 11, Stroke = 1.6, TextXAlignment = Enum.TextXAlignment.Right, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 3), Size = UDim2.fromOffset(56, 14), ZIndex = 4 })
-	local stage = Util.new("Frame", { Name = "Stage", BackgroundTransparency = 1, ClipsDescendants = true, Position = UDim2.fromOffset(6, 18), Size = UDim2.new(1, -12, 1, -22), ZIndex = 3, Parent = footer })
-	local track = { target = 0, shown = 0, changedAt = 0, done = false, clock = 0 }
-	local random = Random.new()
+	local line = Util.new("Frame", { BackgroundColor3 = Theme.Trough, BorderSizePixel = 0, Position = UDim2.fromOffset(84, 89), Size = UDim2.new(1, -94, 0, 6), Visible = false, ZIndex = 2, Parent = frame })
+	Util.corner(line, 3)
+	local lineFill = Util.new("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.fromScale(0, 1), ZIndex = 3, Parent = line })
+	Util.corner(lineFill, 3)
+	local lineGradient = Util.gradient(lineFill, Hud.Sky, 0)
 
-	local function dot(parent, size, color, z, transparency)
-		local frame = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(size, size), BackgroundColor3 = color or Color3.new(1, 1, 1), BackgroundTransparency = transparency or 0, BorderSizePixel = 0, ZIndex = z or 4, Parent = parent })
-		Util.corner(frame, 999)
-		return frame
-	end
-	local function ring(parent, size, color, thickness, z)
-		local frame = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(size, size), BackgroundTransparency = 1, ZIndex = z or 4, Parent = parent })
-		Util.corner(frame, 999)
-		return frame, Util.stroke(frame, color or Color3.new(1, 1, 1), thickness or 2)
-	end
-	local function picture(parent, image, size, z)
-		local label = Util.new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Size = UDim2.fromOffset(size, size), ScaleType = Enum.ScaleType.Fit, ZIndex = z or 5, Parent = parent })
-		Util.icon(label, image)
-		return label, Util.new("UIScale", { Parent = label })
-	end
-	local function glyph(parent, text, size, color, z)
-		local label = Util.text(parent, { Text = text, TextSize = size, Stroke = 1.2, TextColor3 = color, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(size + 8, size + 8), ZIndex = z or 6 })
-		return label
-	end
-	local function at(object, x, y, dx, dy)
-		object.Position = UDim2.new(x, dx or 0, y, dy or 0)
-	end
-	local function popIn(scale)
-		if not Library.ReducedMotion then
-			scale.Scale = 1.5
-			Util.tween(scale, 0.45, { Scale = 1 }, Enum.EasingStyle.Elastic)
-		end
-	end
-	local runnerOf = function(bar)
-		return bar.Icon or status._icon or opts.Logo or Assets.Logo
-	end
-
-	local SCENES = {}
-
-	-- Steal: the egg inside a ring of 16 segments that light up as we close in, and the studs left as a big number
-	-- beside it; "GOT IT!" on arrival.
-	SCENES.run = {
-		build = function(root, bar)
-			local s = { segments = {} }
-			s.hub = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Position = UDim2.new(0.5, -60, 0.5, 0), Size = UDim2.fromOffset(48, 48), ZIndex = 4, Parent = root })
-			for index = 1, 16 do
-				local angle = (index - 1) / 16 * math.pi * 2 - math.pi / 2
-				local segment = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(60, 80, 92), BorderSizePixel = 0, Size = UDim2.fromOffset(4, 8), Rotation = math.deg(angle) + 90, ZIndex = 5, Parent = s.hub })
-				Util.corner(segment, 2)
-				segment.Position = UDim2.new(0.5, math.cos(angle) * 21, 0.5, math.sin(angle) * 21)
-				s.segments[index] = segment
-			end
-			s.goal, s.goalScale = picture(s.hub, bar.Goal or runnerOf(bar), 26, 6)
-			s.goal.Position = UDim2.fromScale(0.5, 0.5)
-			s.number = Util.text(root, { Text = "", TextSize = 28, Stroke = 2.8, Position = UDim2.new(0.5, -24, 0, 2), Size = UDim2.fromOffset(150, 30), ZIndex = 5 })
-			s.caption = Util.text(root, { Text = "STUDS LEFT", TextSize = 10, Stroke = 1.2, TextColor3 = Theme.Muted, Position = UDim2.new(0.5, -23, 0, 32), Size = UDim2.fromOffset(150, 14), ZIndex = 5 })
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			local lit = math.floor(f * 16 + 0.001)
-			local arrived = f >= 0.995
-			for index, segment in s.segments do
-				local on = index <= lit
-				segment.BackgroundColor3 = arrived and Color3.fromRGB(150, 255, 40) or (on and Color3.fromRGB(110, 210, 255) or Color3.fromRGB(60, 80, 92))
-				-- The next segment to light blinks.
-				segment.BackgroundTransparency = (index == lit + 1 and not arrived) and (0.5 + math.sin(clock * 8) * 0.5) or 0
-			end
-			local studs = s.bar and tostring(s.bar.Text or ""):match("^(%d+)")
-			s.number.Text = arrived and "GOT IT!" or (studs or (math.floor(f * 100 + 0.5) .. "%"))
-			s.number.TextColor3 = arrived and Color3.fromRGB(150, 255, 40) or Color3.new(1, 1, 1)
-			s.caption.Visible = not arrived and studs ~= nil
-			if arrived and not s.arrived then
-				popIn(s.goalScale)
-			end
-			s.arrived = arrived
-		end,
-	}
-
-	-- Delivery: a dotted route arcs to the house; the dots light up behind the runner, who carries the egg.
-	SCENES.carry = {
-		build = function(root, bar)
-			local s = { dots = {} }
-			for index = 1, 18 do
-				s.dots[index] = dot(root, 5, Color3.fromRGB(80, 100, 112), 4)
-			end
-			s.house = picture(root, bar.Goal or "house", 26, 5)
-			s.runner = picture(root, runnerOf(bar), 26, 6)
-			s.carry = bar.Carry and picture(root, bar.Carry, 16, 7) or nil
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			local function point(t)
-				local x = 0.07 + (0.88 - 0.07) * t
-				local y = 0.92 - math.sin(t * math.pi) * 0.42
-				return x, y
-			end
-			for index, object in s.dots do
-				local t = (index - 1) / (#s.dots - 1)
-				local x, y = point(t)
-				at(object, x, y)
-				object.BackgroundColor3 = t <= f and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(80, 100, 112)
-			end
-			local hx, hy = point(1)
-			at(s.house, hx, hy, 0, -10)
-			local x, y = point(f)
-			local bob = math.sin(clock * 8) * 1.5
-			at(s.runner, x, y, 0, -10 + bob)
-			if s.carry then
-				at(s.carry, x, y, 0, -25 + bob * 1.5)
-			end
-		end,
-	}
-
-	-- Chase: the thief (red ring) dodges ahead on the lane, we (blue ring) close in along a dashed tether that
-	-- shortens; once in reach crossed swords swing over us, and the catch flashes a starburst.
-	SCENES.chase = {
-		build = function(root, bar)
-			local s = { tether = {} }
-			for index = 1, 10 do
-				s.tether[index] = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(255, 80, 110), BorderSizePixel = 0, Size = UDim2.fromOffset(5, 2), ZIndex = 4, Parent = root })
-			end
-			local function avatar(image, color)
-				local holder = dot(root, 32, Theme.Recess, 5)
-				Util.stroke(holder, color, 2.2)
-				local face = Util.new("ImageLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ScaleType = Enum.ScaleType.Fit, ZIndex = 6, Parent = holder })
-				Util.corner(face, 999)
-				Util.icon(face, image)
-				return holder
-			end
-			s.me = avatar(runnerOf(bar), Color3.fromRGB(110, 210, 255))
-			s.thief = avatar(bar.Goal or "user", Color3.fromRGB(255, 80, 110))
-			s.swords, s.swordsScale = picture(root, "swords", 18, 8)
-			s.burst = glyph(root, "✸", 30, Color3.fromRGB(255, 214, 40), 9)
-			s.burstScale = Util.new("UIScale", { Parent = s.burst })
-			s.burst.Visible = false
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			local meX = 0.1 + f * 0.6
-			local thiefX = 0.88 - f * 0.12
-			local dodge = math.sin(clock * 5) * 6
-			at(s.me, meX, 0.55, 0, -math.abs(math.sin(clock * 13)) * 3)
-			at(s.thief, thiefX, 0.55, 0, dodge)
-			for index, dash in s.tether do
-				local t = index / (#s.tether + 1)
-				at(dash, meX + (thiefX - meX) * t, 0.55, 0, dodge * t)
-				dash.Visible = (thiefX - meX) * t > 0.03 and (thiefX - meX) * (1 - t) > 0.03
-				dash.BackgroundTransparency = 0.2 + math.sin(clock * 8 + index) * 0.2
-			end
-			local inReach = f > 0.75
-			s.swords.Visible = inReach
-			if inReach then
-				at(s.swords, meX, 0.55, 0, -24)
-				s.swords.Rotation = math.sin(clock * 14) * 25
-			end
-			local caught = f >= 0.995
-			if caught and not s.caught then
-				s.burst.Visible = true
-				at(s.burst, thiefX, 0.55)
-				popIn(s.burstScale)
-			end
-			s.burst.Visible = caught
-			s.caught = caught
-		end,
-	}
-
-	-- Race: one chunky Check-UI progress bar (recessed trough, orange-to-gold fill with its bevel), quarter marks and
-	-- the checkered flag at the end; nothing runs across it.
-	SCENES.race = {
-		build = function(root, bar)
-			local s = {}
-			s.trough = Util.new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 6, 0.5, 0), Size = UDim2.new(1, -48, 0, 22), BackgroundColor3 = Theme.Trough, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 4, Parent = root })
-			Util.corner(s.trough, 5)
-			Util.stroke(s.trough, Color3.new(0, 0, 0), 2.4)
-			s.fill = Util.new("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.fromScale(0, 1), ZIndex = 5, Parent = s.trough })
-			Util.corner(s.fill, 5)
-			Util.gradient(s.fill, { Color3.fromRGB(255, 200, 0), Color3.fromRGB(255, 106, 0) }, 90)
-			Util.new("Frame", { BackgroundColor3 = Color3.fromRGB(153, 60, 0), BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -3), Size = UDim2.new(1, 0, 0, 3), ZIndex = 6, Parent = s.fill })
-			Util.damier(s.fill, Color3.new(0, 0, 0), 12, 6, NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.75) }))
-			for index = 1, 3 do
-				Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5, BorderSizePixel = 0, Position = UDim2.fromScale(index / 4, 0.5), Size = UDim2.new(0, 2, 1, -6), ZIndex = 7, Parent = s.trough })
-			end
-			s.label = Util.text(s.trough, { Text = "", TextSize = 13, Stroke = 2, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 8 })
-			local flag = Util.new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.fromOffset(28, 20), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 5, Parent = root })
-			Util.stroke(flag, Color3.new(0, 0, 0), 2)
-			Util.new("ImageLabel", { BackgroundTransparency = 1, Image = Assets.Damier, ImageColor3 = Color3.new(0, 0, 0), ScaleType = Enum.ScaleType.Tile, TileSize = UDim2.fromOffset(10, 10), Size = UDim2.fromScale(1, 1), ZIndex = 6, Parent = flag })
-			s.flagScale = Util.new("UIScale", { Parent = flag })
-			return s
-		end,
-		update = function(s, f)
-			s.fill.Size = UDim2.fromScale(f, 1)
-			s.label.Text = math.floor(f * 100 + 0.5) .. "%"
-			if f >= 0.995 and not s.done then
-				popIn(s.flagScale)
-			end
-			s.done = f >= 0.995
-		end,
-		noPercent = true,
-	}
-
-	-- Star: a night sky; the star wanders, a catch ring closes on it as we get near; the runner flies toward it.
-	SCENES.sky = {
-		build = function(root, bar)
-			local s = { stars = {} }
-			s.sky = Util.new("Frame", { BackgroundColor3 = Color3.fromRGB(14, 18, 44), BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), ZIndex = 3, Parent = root })
-			Util.corner(s.sky, 4)
-			for index = 1, 12 do
-				local star = glyph(root, "✦", 8 + index % 3 * 2, Color3.fromRGB(255, 240, 180), 4)
-				at(star, random:NextNumber(0.03, 0.97), random:NextNumber(0.1, 0.9))
-				s.stars[index] = { label = star, phase = random:NextNumber(0, 6) }
-			end
-			s.goal, s.goalScale = picture(root, bar.Goal or "star", 24, 7)
-			s.ring, s.ringStroke = ring(root, 60, Color3.fromRGB(255, 214, 40), 2, 6)
-			s.runner = picture(root, runnerOf(bar), 20, 7)
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			for _, star in s.stars do
-				star.label.TextTransparency = 0.3 + math.sin(clock * 3 + star.phase) * 0.3
-			end
-			local gx, gy = 0.65 + math.sin(clock * 0.9) * 0.15, 0.5 + math.cos(clock * 1.3) * 0.12
-			at(s.goal, gx, gy)
-			s.goal.Rotation = (s.goal.Rotation + dt * 90) % 360
-			at(s.ring, gx, gy)
-			local size = 24 + (1 - f) * 24
-			s.ring.Size = UDim2.fromOffset(size, size)
-			s.ringStroke.Transparency = 0.6 - f * 0.6
-			at(s.runner, 0.08 + (gx - 0.08) * f, 0.75 + (gy - 0.75) * f)
-			if f >= 0.995 and not s.caught then
-				popIn(s.goalScale)
-			end
-			s.caught = f >= 0.995
-		end,
-	}
-
-	-- Mutation: the mutation icon spirals in around the animal, leaving sparkles; the animal glows.
-	SCENES.magic = {
-		build = function(root, bar)
-			local s = { sparks = {} }
-			s.glow = dot(root, 40, Color3.fromRGB(176, 70, 255), 4, 0.7)
-			s.target, s.targetScale = picture(root, bar.Goal or "sparkles", 30, 6)
-			s.orbiter = picture(root, runnerOf(bar), 18, 7)
-			for index = 1, 10 do
-				local spark = glyph(root, "✦", 10, Color3.fromRGB(214, 140, 255), 5)
-				spark.Visible = false
-				s.sparks[index] = { label = spark, age = 1 }
-			end
-			s.angle, s.spawn = 0, 0
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			at(s.target, 0.5, 0.5)
-			at(s.glow, 0.5, 0.5)
-			local glow = 30 + math.sin(clock * 4) * 4 + f * 10
-			s.glow.Size = UDim2.fromOffset(glow, glow)
-			s.angle += dt * (2.5 + f * 5)
-			local radius = 16 + (1 - f) * 110
-			local x, y = math.cos(s.angle) * radius, math.sin(s.angle) * math.min(radius * 0.18, 18)
-			at(s.orbiter, 0.5, 0.5, x, y)
-			s.spawn += dt
-			if s.spawn > 0.06 and not Library.ReducedMotion then
-				s.spawn = 0
-				for _, spark in s.sparks do
-					if spark.age >= 1 then
-						spark.age, spark.x, spark.y = 0, x, y
-						spark.label.Visible = true
-						break
-					end
-				end
-			end
-			for _, spark in s.sparks do
-				if spark.age < 1 then
-					spark.age += dt * 1.6
-					at(spark.label, 0.5, 0.5, spark.x, spark.y - spark.age * 8)
-					spark.label.TextTransparency = spark.age
-					spark.label.Visible = spark.age < 1
-				end
-			end
-			if f >= 0.995 and not s.done then
-				popIn(s.targetScale)
-			end
-			s.done = f >= 0.995
-		end,
-	}
-
-	-- Plant: a soil strip with one mound per egg; each planted one sprouts and sways, the next gets a bouncing seed.
-	SCENES.plant = {
-		build = function(root, bar)
-			local s = { slots = {} }
-			s.count = math.clamp(math.floor(tonumber(bar.Total) or 6), 1, 10)
-			local soil = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 1), Size = UDim2.new(0.96, 0, 0, 10), BackgroundColor3 = Color3.fromRGB(110, 70, 40), BorderSizePixel = 0, ZIndex = 4, Parent = root })
-			Util.corner(soil, 4)
-			Util.stroke(soil, Color3.new(0, 0, 0), 1.6)
-			for index = 1, s.count do
-				local x = 0.04 + (index - 0.5) / s.count * 0.92
-				local mound = dot(root, 14, Color3.fromRGB(140, 92, 52), 5)
-				at(mound, x, 1, 0, -10)
-				local sprout, scale = picture(root, "sprout", 22, 6)
-				sprout.ImageColor3 = Color3.fromRGB(140, 240, 70)
-				sprout.AnchorPoint = Vector2.new(0.5, 1)
-				at(sprout, x, 1, 0, -12)
-				scale.Scale = 0
-				s.slots[index] = { sprout = sprout, scale = scale, grown = false }
-			end
-			s.seed = glyph(root, "•", 16, Color3.fromRGB(255, 220, 140), 7)
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			local done = math.floor(f * s.count + 0.001)
-			for index, slot in s.slots do
-				local grown = index <= done
-				if grown and not slot.grown then
-					slot.scale.Scale = 0.1
-					Util.tween(slot.scale, 0.5, { Scale = 1 }, Enum.EasingStyle.Back)
-				elseif not grown then
-					slot.scale.Scale = 0
-				end
-				slot.grown = grown
-				slot.sprout.Rotation = grown and math.sin(clock * 2 + index) * 8 or 0
-			end
-			s.seed.Visible = done < s.count
-			if s.seed.Visible then
-				at(s.seed, 0.04 + (done + 0.5) / s.count * 0.92, 1, 0, -26 - math.abs(math.sin(clock * 6)) * 8)
-			end
-		end,
-		rebuildOn = function(bar, s)
-			return math.clamp(math.floor(tonumber(bar.Total) or 6), 1, 10) ~= s.count
-		end,
-	}
-
-	-- Treadmill: a speed gauge - tick marks around a half dial light up, the needle swings (with a little jitter).
-	SCENES.belt = {
-		build = function(root, bar)
-			local s = { ticks = {} }
-			s.pivot = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Position = UDim2.new(0.5, 0, 1, -4), Size = UDim2.fromOffset(2, 2), ZIndex = 5, Parent = root })
-			for index = 0, 12 do
-				local angle = math.pi + index / 12 * math.pi
-				local tick = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(80, 100, 112), BorderSizePixel = 0, Size = UDim2.fromOffset(3, index % 3 == 0 and 9 or 6), Rotation = math.deg(angle) + 90, ZIndex = 5, Parent = root })
-				tick.Position = UDim2.new(0.5, math.cos(angle) * 34, 1, -4 + math.sin(angle) * 34)
-				s.ticks[index + 1] = tick
-			end
-			s.needle = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = Color3.fromRGB(255, 80, 110), BorderSizePixel = 0, Position = UDim2.new(0.5, 0, 1, -4), Size = UDim2.fromOffset(3, 30), ZIndex = 6, Parent = root })
-			Util.stroke(s.needle, Color3.new(0, 0, 0), 1)
-			local hub = dot(root, 10, Color3.new(1, 1, 1), 7)
-			at(hub, 0.5, 1, 0, -4)
-			s.left = picture(root, runnerOf(bar), 24, 6)
-			at(s.left, 0.12, 0.55)
-			s.right = picture(root, bar.Goal or "zap", 22, 6)
-			at(s.right, 0.88, 0.55)
-			return s
-		end,
-		update = function(s, f, dt, clock, moving)
-			local jitter = moving and math.sin(clock * 30) * 2 or 0
-			s.needle.Rotation = -90 + f * 180 + jitter
-			for index, tick in s.ticks do
-				tick.BackgroundColor3 = (index - 1) / 12 <= f and Color3.fromRGB(150, 255, 40) or Color3.fromRGB(80, 100, 112)
-			end
-			at(s.left, 0.12, 0.55, 0, -math.abs(math.sin(clock * 14)) * 4)
-		end,
-	}
-
-	-- Butterfly Bloom: butterflies flutter around (wings beating), an hourglass at the side drains with the Bloom.
-	SCENES.flutter = {
-		build = function(root, bar)
-			local s = { flies = {} }
-			for index = 1, 4 do
-				local fly = picture(root, runnerOf(bar), 18, 6)
-				s.flies[index] = { image = fly, phase = random:NextNumber(0, 6), base = 0.1 + index * 0.15 }
-			end
-			s.glass = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.9, 0.5), Size = UDim2.fromOffset(18, 36), BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, ZIndex = 5, Parent = root })
-			Util.corner(s.glass, 5)
-			Util.stroke(s.glass, Color3.fromRGB(255, 220, 140), 1.6)
-			s.top = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 0.5, -1), Size = UDim2.new(1, -6, 0.5, -3), BackgroundColor3 = Color3.fromRGB(255, 200, 80), BorderSizePixel = 0, ZIndex = 6, Parent = s.glass })
-			s.bottom = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -3), Size = UDim2.new(1, -6, 0, 0), BackgroundColor3 = Color3.fromRGB(255, 200, 80), BorderSizePixel = 0, ZIndex = 6, Parent = s.glass })
-			s.stream = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0, 2, 0.5, -3), BackgroundColor3 = Color3.fromRGB(255, 200, 80), BorderSizePixel = 0, ZIndex = 6, Parent = s.glass })
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			for _, fly in s.flies do
-				local x = fly.base + math.sin(clock * 0.8 + fly.phase) * 0.08
-				local y = 0.5 + math.sin(clock * 1.7 + fly.phase * 2) * 0.3
-				at(fly.image, x, y)
-				local flap = math.abs(math.sin(clock * 14 + fly.phase))
-				fly.image.Size = UDim2.fromOffset(6 + flap * 14, 18)
-			end
-			s.top.Size = UDim2.new(1, -6, (1 - f) * 0.5, -3 * (1 - f))
-			s.bottom.Size = UDim2.new(1, -6, f * 0.5, -3 * f)
-			s.stream.Visible = f < 0.995
-		end,
-	}
-
-	-- Banjo: a music staff; notes slide in from the right into the hit zone, which flashes as each one lands.
-	SCENES.music = {
-		build = function(root, bar)
-			local s = { notes = {} }
-			for line = 1, 5 do
-				Util.new("Frame", { BackgroundColor3 = Color3.fromRGB(180, 200, 215), BackgroundTransparency = 0.6, BorderSizePixel = 0, Position = UDim2.new(0, 0, (line - 0.5) / 5, 0), Size = UDim2.new(1, 0, 0, 1), ZIndex = 4, Parent = root })
-			end
-			s.zone, s.zoneStroke = ring(root, 26, Color3.fromRGB(255, 214, 40), 2.4, 5)
-			at(s.zone, 0.12, 0.5)
-			s.banjo = picture(root, runnerOf(bar), 18, 6)
-			at(s.banjo, 0.12, 0.5)
-			for index = 1, 6 do
-				local note = glyph(root, "♪", 18, Color3.fromRGB(255, 220, 90), 6)
-				note.Visible = false
-				s.notes[index] = { label = note, x = 2 }
-			end
-			s.spawn, s.flash = 0, 0
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			s.spawn += dt
-			if s.spawn > 0.55 then
-				s.spawn = 0
-				for _, note in s.notes do
-					if note.x > 1.1 or not note.label.Visible then
-						note.x, note.line = 1.05, random:NextInteger(1, 5)
-						note.label.Visible = true
-						break
-					end
-				end
-			end
-			for _, note in s.notes do
-				if note.label.Visible then
-					note.x -= dt * 0.45
-					at(note.label, note.x, (note.line - 0.5) / 5)
-					if note.x <= 0.12 then
-						note.label.Visible = false
-						s.flash = 1
-					end
-				end
-			end
-			s.flash = math.max(0, s.flash - dt * 4)
-			s.zone.Size = UDim2.fromOffset(26 + s.flash * 12, 26 + s.flash * 12)
-			s.zoneStroke.Color = Color3.fromRGB(255, 214, 40):Lerp(Color3.fromRGB(150, 255, 40), s.flash)
-		end,
-	}
-
-	-- Night: the sky warms from navy to dawn, the moon crosses and sets, the sun rises at the end, stars fade.
-	SCENES.arc = {
-		build = function(root, bar)
-			local s = { stars = {} }
-			s.sky = Util.new("Frame", { BackgroundColor3 = Color3.fromRGB(14, 18, 44), BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), ZIndex = 3, Parent = root })
-			Util.corner(s.sky, 4)
-			for index = 1, 10 do
-				local star = glyph(root, "✦", 9, Color3.fromRGB(255, 240, 200), 4)
-				at(star, random:NextNumber(0.05, 0.95), random:NextNumber(0.1, 0.7))
-				s.stars[index] = star
-			end
-			s.moon = picture(root, runnerOf(bar), 22, 6)
-			s.sun, s.sunScale = picture(root, bar.Goal or "sun", 26, 6)
-			s.sun.ImageColor3 = Color3.fromRGB(255, 200, 60)
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			s.sky.BackgroundColor3 = Color3.fromRGB(14, 18, 44):Lerp(Color3.fromRGB(255, 150, 80), f * 0.8)
-			for index, star in s.stars do
-				star.TextTransparency = f + math.sin(clock * 2 + index) * 0.15
-			end
-			at(s.moon, 0.1 + f * 0.75, 0.75 - math.sin(f * math.pi) * 0.55 + f * 0.4)
-			at(s.sun, 0.85, 1.3 - f * 0.85)
-			s.sun.Rotation = (s.sun.Rotation + dt * 30) % 360
-		end,
-	}
-
-	-- Scanning: the magnifier stays put; an equalizer of bars beside it pulses while the field is searched.
-	SCENES.scan = {
-		build = function(root, bar)
-			local s = { bars = {} }
-			s.icon = picture(root, runnerOf(bar), 26, 6)
-			at(s.icon, 0.5, 0.5, -70, 0)
-			for index = 1, 9 do
-				local column = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.fromOffset(6, 10), ZIndex = 5, Parent = root })
-				Util.corner(column, 3)
-				Util.gradient(column, { Color3.fromRGB(0, 205, 255), Color3.fromRGB(0, 120, 240) }, 90)
-				at(column, 0.5, 0.5, -36 + index * 12, 0)
-				s.bars[index] = column
-			end
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			for index, column in s.bars do
-				local height = 8 + math.abs(math.sin(clock * 4 + index * 0.7)) * 28
-				column.Size = UDim2.fromOffset(6, height)
-			end
-		end,
-		noPercent = true,
-	}
-
-	-- Idle: three dots pulsing one after the other, nothing else.
-	SCENES.idle = {
-		build = function(root, bar)
-			local s = { dots = {} }
-			for index = 1, 3 do
-				local d = dot(root, 12, Color3.fromRGB(214, 140, 255), 5)
-				at(d, 0.5, 0.5, (index - 2) * 22, 0)
-				s.dots[index] = { frame = d, scale = Util.new("UIScale", { Parent = d }) }
-			end
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			for index, d in s.dots do
-				local wave = math.max(0, math.sin(clock * 4 - index * 0.9))
-				d.scale.Scale = 0.7 + wave * 0.6
-				d.frame.BackgroundTransparency = 0.5 - wave * 0.5
-			end
-		end,
-		noPercent = true,
-	}
-
-	-- Capture The Egg: the event egg on a 1st place podium. Going for it: arrows converge on it from both sides.
-	-- Holding it (full progress): a crown floats over it and golden rays turn behind.
-	SCENES.capture = {
-		build = function(root, bar)
-			local s = {}
-			s.rays = Util.new("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Image = Assets.Sunburst, ImageColor3 = Color3.fromRGB(255, 214, 40), ImageTransparency = 0.35, Position = UDim2.new(0.5, 0, 0.5, -4), Size = UDim2.fromOffset(84, 84), ZIndex = 4, Parent = root })
-			for _, step in { { 0, 34, 14, Color3.fromRGB(255, 200, 40) }, { -36, 30, 9, Color3.fromRGB(200, 208, 218) }, { 36, 30, 6, Color3.fromRGB(205, 127, 50) } } do
-				local block = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = step[4], BorderSizePixel = 0, Position = UDim2.new(0.5, step[1], 1, 0), Size = UDim2.fromOffset(step[2], step[3]), ZIndex = 5, Parent = root })
-				Util.stroke(block, Color3.new(0, 0, 0), 1.6)
-			end
-			s.egg, s.eggScale = picture(root, bar.Goal or runnerOf(bar), 26, 6)
-			s.egg.AnchorPoint = Vector2.new(0.5, 1)
-			s.crown = picture(root, "crown", 18, 7)
-			s.crown.ImageColor3 = Color3.fromRGB(255, 214, 40)
-			s.left = glyph(root, "»", 22, Color3.fromRGB(214, 140, 255), 6)
-			s.right = glyph(root, "«", 22, Color3.fromRGB(214, 140, 255), 6)
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			local holding = f >= 0.995
-			at(s.egg, 0.5, 1, 0, -14 - (holding and math.abs(math.sin(clock * 3)) * 3 or 0))
-			s.rays.Visible = holding
-			s.rays.Rotation = (s.rays.Rotation + dt * 40) % 360
-			s.crown.Visible = holding
-			at(s.crown, 0.5, 1, 0, -46 + math.sin(clock * 3) * 2)
-			s.crown.Rotation = math.sin(clock * 2) * 10
-			s.left.Visible, s.right.Visible = not holding, not holding
-			local wave = (clock * 1.2) % 1
-			local spread = (1 - f) * 0.3 + 0.08
-			at(s.left, 0.5 - spread * (1 - wave * 0.4), 0.55)
-			at(s.right, 0.5 + spread * (1 - wave * 0.4), 0.55)
-			s.left.TextTransparency, s.right.TextTransparency = wave * 0.7, wave * 0.7
-			if holding and not s.holding then
-				popIn(s.eggScale)
-			end
-			s.holding = holding
-		end,
-		noPercent = true,
-	}
-
-	-- Enchanted Altar: three test tubes filling with purple essence one after the other, bubbles rising in them.
-	SCENES.altar = {
-		build = function(root, bar)
-			local s = { tubes = {} }
-			for index = 1, 3 do
-				local tube = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.new(0.5, (index - 2) * 40, 1, -2), Size = UDim2.fromOffset(18, 42), ClipsDescendants = true, ZIndex = 5, Parent = root })
-				Util.corner(tube, 8)
-				Util.stroke(tube, Color3.fromRGB(214, 140, 255), 1.6)
-				local liquid = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 1), Size = UDim2.fromScale(1, 0), ZIndex = 6, Parent = tube })
-				Util.gradient(liquid, { Color3.fromRGB(214, 120, 255), Color3.fromRGB(120, 0, 220) }, 90)
-				local bubbles = {}
-				for b = 1, 3 do
-					local bubble = dot(tube, 4, Color3.new(1, 1, 1), 7, 0.4)
-					bubbles[b] = { frame = bubble, phase = random:NextNumber(0, 1) }
-				end
-				s.tubes[index] = { liquid = liquid, bubbles = bubbles }
-			end
-			s.icon = picture(root, runnerOf(bar), 20, 6)
-			at(s.icon, 0.5, 0.5, -90, 0)
-			s.goal = picture(root, bar.Goal or "sparkles", 20, 6)
-			at(s.goal, 0.5, 0.5, 90, 0)
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			for index, tube in s.tubes do
-				local level = math.clamp(f * 3 - (index - 1), 0, 1)
-				tube.liquid.Size = UDim2.fromScale(1, level)
-				for _, bubble in tube.bubbles do
-					local t = (clock * 0.6 + bubble.phase) % 1
-					bubble.frame.Visible = level > 0.15
-					bubble.frame.Position = UDim2.new(0.5, math.sin(t * 9 + bubble.phase * 6) * 3, 1, -t * level * 40)
-					bubble.frame.BackgroundTransparency = 0.3 + t * 0.7
-				end
-			end
-		end,
-	}
-
-	-- Wisp: a row of mission stars lighting gold as the mission advances; the next one twinkles.
-	SCENES.wisp = {
-		build = function(root, bar)
-			local s = { stars = {} }
-			s.icon = picture(root, runnerOf(bar), 24, 6)
-			at(s.icon, 0.5, 0.5, -130, 0)
-			for index = 1, 10 do
-				local star = glyph(root, "★", 18, Color3.fromRGB(80, 100, 112), 6)
-				at(star, 0.5, 0.5, -95 + index * 20, 0)
-				s.stars[index] = { label = star, scale = Util.new("UIScale", { Parent = star }), lit = false }
-			end
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			local lit = math.floor(f * 10 + 0.001)
-			for index, star in s.stars do
-				local on = index <= lit
-				star.label.TextColor3 = on and Color3.fromRGB(255, 214, 40) or Color3.fromRGB(80, 100, 112)
-				if on and not star.lit then
-					popIn(star.scale)
-				end
-				star.lit = on
-				star.label.TextTransparency = (index == lit + 1) and (0.3 + math.sin(clock * 6) * 0.3) or 0
-			end
-		end,
-	}
-
-	-- Race join: a portal of two counter-turning dashed rings; our avatar is drawn into it as the window runs out.
-	SCENES.join = {
-		build = function(root, bar)
-			local s = { rings = {} }
-			s.core = dot(root, 34, Color3.fromRGB(120, 0, 220), 4, 0.35)
-			at(s.core, 0.5, 0.5)
-			for index, size in { 48, 36 } do
-				local holder = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(size, size), ZIndex = 5, Parent = root })
-				for dash = 1, 10 do
-					local angle = dash / 10 * math.pi * 2
-					Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = index == 1 and Color3.fromRGB(214, 140, 255) or Color3.fromRGB(110, 210, 255), BorderSizePixel = 0, Position = UDim2.new(0.5, math.cos(angle) * size / 2, 0.5, math.sin(angle) * size / 2), Size = UDim2.fromOffset(5, 3), Rotation = math.deg(angle) + 90, ZIndex = 5, Parent = holder })
-				end
-				s.rings[index] = holder
-			end
-			s.avatar, s.avatarScale = picture(root, runnerOf(bar), 24, 7)
-			at(s.avatar, 0.5, 0.5)
-			return s
-		end,
-		update = function(s, f, dt, clock)
-			s.rings[1].Rotation = (s.rings[1].Rotation + dt * 90) % 360
-			s.rings[2].Rotation = (s.rings[2].Rotation - dt * 140) % 360
-			s.core.BackgroundTransparency = 0.35 + math.sin(clock * 4) * 0.15
-			s.avatarScale.Scale = math.max(1 - f * 0.75, 0.25)
-			s.avatar.Rotation = f * 360 * 2
-		end,
-	}
-	-- The older style names map onto the scenes above.
-	SCENES.flee = SCENES.chase
 	function status:SetStat(name, value, colors)
-		local tile = status._stats[name]
-		if not tile then
+		local entry = status._stats[name]
+		if not entry then
 			status._statOrder += 1
 			local pill, label, gradient = Hud.pill(stats, "", colors or Hud.Grey, status._statOrder)
+			pill.Size = UDim2.fromOffset(0, 16)
+			label.TextSize = 10
 			pill.ZIndex = 5
-			tile = { pill = pill, label = label, gradient = gradient }
-			status._stats[name] = tile
+			entry = { pill = pill, label = label, gradient = gradient }
+			status._stats[name] = entry
 		end
-		tile.label.Text = string.upper(name) .. "  " .. tostring(value)
+		entry.label.Text = string.upper(name) .. " " .. tostring(value)
 		if colors then
-			Hud.setColors(tile.gradient, colors)
+			Hud.setColors(entry.gradient, colors)
 		end
 	end
 
@@ -3080,6 +2542,8 @@ function Library:CreateStatus(opts)
 			local entry = chipPool[index]
 			if not entry then
 				local pill, label, gradient = Hud.pill(chipRow, "", Hud.Grey, index)
+				pill.Size = UDim2.fromOffset(0, 16)
+				label.TextSize = 10
 				entry = { frame = pill, label = label, gradient = gradient }
 				chipPool[index] = entry
 			end
@@ -3097,16 +2561,17 @@ function Library:CreateStatus(opts)
 		if not steps.Visible then
 			return
 		end
+		local current = info.Current or 0
 		for index, name in info.Names do
 			local entry = stepPool[index]
 			if not entry then
 				local pill, label, gradient = Hud.pill(steps, "", Hud.Grey, index)
-				pill.Size = UDim2.fromOffset(0, 18)
+				pill.Size = UDim2.fromOffset(0, 16)
+				label.TextSize = 10
 				entry = { frame = pill, label = label, gradient = gradient }
 				stepPool[index] = entry
 			end
 			entry.frame.Visible = true
-			local current = info.Current or 0
 			entry.label.Text = (index < current and "✓ " or "") .. string.upper(name)
 			Hud.setColors(entry.gradient, index == current and Hud.Gold or (index < current and Hud.Green or Hud.Grey))
 		end
@@ -3115,60 +2580,73 @@ function Library:CreateStatus(opts)
 		end
 	end
 
+	-- Progress: the ring segments around the tile and the thin line; the tile's motion follows the task's style.
+	local motion = { target = 0, shown = 0, style = "run", clock = 0, lit = -1 }
+	local MOTIONS = {
+		run = "bob", carry = "bob", chase = "shake", capture = "pulse", race = "lean", join = "spin", sky = "float",
+		magic = "pulse", altar = "pulse", wisp = "float", plant = "bob", belt = "bounce", flutter = "float",
+		music = "bounce", arc = "float", scan = "sweep", idle = "breathe",
+	}
 	local function renderBar(bar)
-		-- The plate grows by the footer while a bar is shown and shrinks back without one.
 		local shown = type(bar) == "table"
-		if footer.Visible ~= shown then
-			footer.Visible = shown
-			Util.tween(frame, 0.25, { Size = UDim2.fromOffset(620, shown and 226 or 142) }, Enum.EasingStyle.Quint)
-			if shown then
-				track.shown = 0
-			end
-		end
+		line.Visible = shown
 		if not shown then
+			motion.target, motion.style = 0, "idle"
 			return
 		end
-		-- A new style (or a scene asking for it) rebuilds the stage, and the progress starts from zero.
-		local scene = SCENES[bar.Style] or SCENES.run
-		local key = tostring(bar.Style) .. "|" .. tostring(bar.Icon) .. "|" .. tostring(bar.Goal) .. "|" .. tostring(bar.Carry)
-		if scene ~= track.scene or key ~= track.key or (scene.rebuildOn and track.state and scene.rebuildOn(bar, track.state)) then
-			for _, child in stage:GetChildren() do
-				child:Destroy()
-			end
-			local root = Util.new("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 3, Parent = stage })
-			local ok, state = pcall(scene.build, root, bar)
-			track.scene, track.key, track.state = scene, key, ok and state or nil
-			if not ok then
-				warn("[Zenity UI] status scene: " .. tostring(state))
-			end
-			track.shown = 0
-		end
-		local fraction = math.clamp(tonumber(bar.Fraction) or 0, 0, 1)
-		if math.abs(fraction - track.target) > 0.001 then
-			track.changedAt = os.clock()
-		end
-		track.target = fraction
-		barText.Text = tostring(bar.Text or "")
-		percentText.Text = scene.noPercent and "" or (math.floor(fraction * 100 + 0.5) .. "%")
-		if track.state then
-			track.state.bar = bar
+		motion.target = math.clamp(tonumber(bar.Fraction) or 0, 0, 1)
+		motion.style = MOTIONS[bar.Style] or "bob"
+		motion.colors = bar.Colors or Hud.Sky
+		Hud.setColors(lineGradient, motion.colors)
+		if bar.Text and bar.Text ~= "" and #(status._chips or {}) == 0 then
+			detail.Text = tostring(bar.Text)
 		end
 	end
 
-	-- One frame of the current scene, from the eased progress (sweeping scenes follow their target directly).
-	local function stepTrack(deltaTime)
-		if not footer.Visible or not track.state then
+	local function stepMotion(deltaTime)
+		motion.clock += deltaTime
+		motion.shown += (motion.target - motion.shown) * math.min(1, deltaTime * 6)
+		lineFill.Size = UDim2.fromScale(motion.shown, 1)
+		-- Segments: lit up to the progress in the bar's colour; the sweep style runs a light around the ring instead.
+		local lit = math.floor(motion.shown * 20 + 0.001)
+		local sweep = motion.style == "sweep"
+		local head = math.floor(motion.clock * 14) % 20 + 1
+		if sweep or lit ~= motion.lit or motion.colorsSet ~= motion.colors then
+			motion.lit, motion.colorsSet = lit, motion.colors
+			local on = (motion.colors or Hud.Sky)[1]
+			for index, segment in segments do
+				local active = sweep and ((head - index) % 20 < 5) or (not sweep and index <= lit)
+				segment.BackgroundColor3 = active and on or Color3.fromRGB(50, 66, 76)
+			end
+		end
+		if Library.ReducedMotion then
+			holder.Position, holder.Rotation, holderScale.Scale = UDim2.fromScale(0.5, 0.5), 0, 1
 			return
 		end
-		track.clock += deltaTime
-		track.shown += (track.target - track.shown) * math.min(1, deltaTime * 5)
-		local moving = math.abs(track.target - track.shown) > 0.003 or os.clock() - track.changedAt < 0.5
-		local reduced = Library.ReducedMotion
-		local ok, err = pcall(track.scene.update, track.state, track.shown, reduced and 0 or deltaTime, reduced and 0 or track.clock, moving)
-		if not ok then
-			warn("[Zenity UI] status scene: " .. tostring(err))
-			track.state = nil
+		local t, x, y, rotation, scale = motion.clock, 0, 0, 0, 1
+		local kind = motion.style
+		if kind == "bob" then
+			y = -math.abs(math.sin(t * 6)) * 3
+		elseif kind == "shake" then
+			x = math.sin(t * 40) * 1.5
+		elseif kind == "pulse" then
+			scale = 1 + math.sin(t * 4) * 0.08
+		elseif kind == "lean" then
+			rotation = math.sin(t * 3) * 8
+		elseif kind == "spin" then
+			rotation = (t * 120) % 360
+		elseif kind == "float" then
+			y = math.sin(t * 2) * 3
+		elseif kind == "bounce" then
+			y = -math.abs(math.sin(t * 9)) * 4
+		elseif kind == "sweep" then
+			rotation = math.sin(t * 3) * 15
+		else
+			scale = 1 + math.sin(t * 1.6) * 0.05
 		end
+		holder.Position = UDim2.new(0.5, x, 0.5, y)
+		holder.Rotation = rotation
+		holderScale.Scale = scale
 	end
 
 	function status:SetModel(model)
@@ -3193,11 +2671,12 @@ function Library:CreateStatus(opts)
 		local state = Hud.StateColors[info.State] and info.State or "idle"
 		stateText.Text = Hud.StateWords[state]
 		Hud.setColors(stateGradient, Hud.StateColors[state])
-		wellStroke.Color = Hud.StateColors[state][1]
+		tileStroke.Color = Hud.StateColors[state][1]
 		tagPill.Visible = type(info.Tag) == "string" and info.Tag ~= ""
 		tagText.Text = info.Tag or ""
 		title.Text = info.Text or opts.Title or "Zenity Hub"
 		detail.Text = info.Detail or ""
+		status._chips = info.Chips
 		if info.Icon ~= status._icon then
 			status._icon = info.Icon
 			Util.icon(icon, info.Icon or opts.Logo or Assets.Logo)
@@ -3205,7 +2684,6 @@ function Library:CreateStatus(opts)
 		status:SetModel(info.Model)
 		renderChips(info.Chips)
 		renderSteps(info.Steps)
-
 		renderBar(info.Bar)
 	end
 
@@ -3224,12 +2702,13 @@ function Library:CreateStatus(opts)
 		gui:Destroy()
 	end
 
+	local startedAt = os.clock()
 	local frames, clock, spin = 0, 0, 0
 	table.insert(connections, runService.RenderStepped:Connect(function(deltaTime)
 		frames += 1
 		clock += deltaTime
 		if status.Visible then
-			stepTrack(deltaTime)
+			stepMotion(deltaTime)
 		end
 		if clock >= 0.5 then
 			local up = math.floor(os.clock() - startedAt)
@@ -3256,8 +2735,8 @@ function Library:CreateStatus(opts)
 		end
 	end))
 
-	frame.Position = (opts.Position or UDim2.new(0.5, 0, 0, 14)) - UDim2.fromOffset(0, 40)
-	Util.tween(frame, 0.45, { Position = opts.Position or UDim2.new(0.5, 0, 0, 14) }, Enum.EasingStyle.Back)
+	frame.Position = home - UDim2.fromOffset(0, 30)
+	Util.tween(frame, 0.4, { Position = home }, Enum.EasingStyle.Back)
 	status:Set({ Text = opts.Title or "Zenity Hub", Detail = opts.Detail or "Nothing running", State = "idle" })
 	return status
 end
@@ -3642,5 +3121,7 @@ end
 function Library:UseGameFont() end
 
 Library.Util = Util
+-- Icons start downloading as soon as the library loads, before any window is built.
+Util.startLucide()
 Library.Container = Container
 return Library
