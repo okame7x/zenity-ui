@@ -737,13 +737,18 @@ function Container:_handle(frame, element)
 			frame:Destroy()
 		end
 	end
-	function element:SetVisible(value)
-		frame.Visible = value ~= false
+	if element.SetVisible == nil then
+		function element:SetVisible(value)
+			frame.Visible = value ~= false
+		end
 	end
-	element.SetValue = function(first, second)
-		local value = first == element and second or first
-		if element.Set then
-			return element:Set(value)
+	-- SetValue as an alias of Set, only for elements without their own SetValue (stat tiles have one).
+	if element.SetValue == nil then
+		element.SetValue = function(first, second)
+			local value = first == element and second or first
+			if element.Set then
+				return element:Set(value)
+			end
 		end
 	end
 	return element
