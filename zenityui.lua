@@ -816,6 +816,9 @@ function Container:AddSection(text)
 	function section:SetTitle(value)
 		title.Text = string.upper(tostring(value or ""))
 	end
+	function section:SetVisible(value)
+		holder.Visible = value ~= false
+	end
 	heading.MouseButton1Click:Connect(function()
 		section:SetExpanded(not section.Expanded)
 	end)
@@ -1775,6 +1778,247 @@ function Container:AddAssetLogItem(item)
 	return self:_handle(frame, { Type = "LogItem" })
 end
 
+
+-- Event card: a big pill on the left (a time, OPEN, LIVE...), the event's title and detail line, a progress bar.
+-- Set(big, detail, colors, fraction): fraction nil hides the bar.
+function Container:AddEventCard(options)
+	local opts = Util.options(options)
+	local frame = Util.card(self.List, { Name = "EventCard", Size = UDim2.new(1, 0, 0, 66), LayoutOrder = self:_nextOrder() })
+	local pill = Util.new("Frame", { AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Position = UDim2.new(0, 10, 0.5, -4), Size = UDim2.fromOffset(96, 36), ZIndex = 2, Parent = frame })
+	Util.corner(pill, 5)
+	Util.stroke(pill, Color3.new(0, 0, 0), 2.2)
+	local pillGradient = Util.gradient(pill, Hud.Grey, 90)
+	local big = Util.text(pill, { Text = "--", TextSize = 18, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	local icon
+	if opts.Icon then
+		icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(116, 8), Size = UDim2.fromOffset(18, 18), ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Parent = frame })
+		Util.icon(icon, opts.Icon)
+	end
+	local left = opts.Icon and 140 or 116
+	Util.text(frame, { Text = string.upper(opts.Name), TextSize = 13, Position = UDim2.fromOffset(left, 8), Size = UDim2.new(1, -left - 10, 0, 18), ZIndex = 2 })
+	local detail = Util.text(frame, { Text = "", TextSize = 11, Stroke = 1.2, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(116, 28), Size = UDim2.new(1, -126, 0, 14), ZIndex = 2 })
+	local trough = Util.new("Frame", { BackgroundColor3 = Theme.Trough, BorderSizePixel = 0, Position = UDim2.new(0, 116, 1, -16), Size = UDim2.new(1, -126, 0, 6), ZIndex = 2, Parent = frame })
+	Util.corner(trough, 3)
+	local fill = Util.new("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.fromScale(0, 1), ZIndex = 3, Parent = trough })
+	Util.corner(fill, 3)
+	local fillGradient = Util.gradient(fill, Hud.Grey, 0)
+	local element = { Type = "EventCard" }
+	function element:Set(bigText, detailText, colors, fraction)
+		big.Text = tostring(bigText or "--")
+		detail.Text = tostring(detailText or "")
+		Hud.setColors(pillGradient, colors or Hud.Grey)
+		Hud.setColors(fillGradient, colors or Hud.Grey)
+		trough.Visible = type(fraction) == "number"
+		if trough.Visible then
+			fill.Size = UDim2.fromScale(math.clamp(fraction, 0, 1), 1)
+		end
+	end
+	return self:_handle(frame, element)
+end
+
+-- Stat tiles: a row of equal tiles, each a value over its caption (caption in the tile's colour), an icon if given.
+-- tiles = { { Caption, Colors, Icon } }; SetValue(index, text).
+function Container:AddStatTiles(tiles)
+	tiles = type(tiles) == "table" and tiles or {}
+	local withIcons = false
+	for _, tile in tiles do
+		if tile.Icon then
+			withIcons = true
+		end
+	end
+	local holder = Util.new("Frame", { Name = "StatTiles", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, withIcons and 74 or 52), LayoutOrder = self:_nextOrder(), Parent = self.List })
+	local values = {}
+	local count = math.max(#tiles, 1)
+	for index, tile in tiles do
+		local card = Util.card(holder, { Name = "Tile", Position = UDim2.new((index - 1) / count, index == 1 and 0 or 3, 0, 0), Size = UDim2.new(1 / count, -6 + (index == 1 and 3 or 0), 1, 0) })
+		values[index] = Util.text(card, { Text = "--", TextSize = 16, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 5), Size = UDim2.new(1, 0, 0, 20), ZIndex = 2 })
+		Util.text(card, { Text = tostring(tile.Caption or ""), TextSize = 9, Stroke = 1.2, TextColor3 = (tile.Colors or Hud.Grey)[1], TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 12), ZIndex = 2 })
+		if tile.Icon then
+			local image = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 42), Size = UDim2.fromOffset(24, 24), ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Parent = card })
+			Util.icon(image, tile.Icon)
+		end
+	end
+	local element = { Type = "StatTiles" }
+	function element:SetValue(index, text)
+		if values[index] then
+			values[index].Text = tostring(text)
+		end
+	end
+	return self:_handle(holder, element)
+end
+
+-- Filter chips: a segmented row; the picked chip takes its colours, the rest stay dark. Values = { { Key, Text,
+-- Colors } }; Callback(key); SetText(key, text) (e.g. counts); Set(key).
+function Container:AddChips(options)
+	local opts = Util.options(options)
+	local holder = Util.new("Frame", { Name = "Chips", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = self:_nextOrder(), Parent = self.List })
+	local chips = {}
+	local element = { Type = "Chips", Value = opts.Default }
+	local count = math.max(#opts.Values, 1)
+	local function paint()
+		for key, chip in chips do
+			local on = element.Value == key
+			chip.gradient.Enabled = on
+			chip.frame.BackgroundColor3 = on and Color3.new(1, 1, 1) or Theme.Card
+			chip.label.TextColor3 = on and Color3.new(1, 1, 1) or Theme.Muted
+		end
+	end
+	for index, entry in opts.Values do
+		local key = entry.Key or entry[1]
+		local frame = Util.new("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = Theme.Card, BorderSizePixel = 0, Position = UDim2.new((index - 1) / count, index == 1 and 0 or 3, 0, 0), Size = UDim2.new(1 / count, -6 + (index == 1 and 3 or 0), 1, 0), ZIndex = 2, Parent = holder })
+		Util.corner(frame, 4)
+		Util.stroke(frame, Color3.new(0, 0, 0), 2)
+		local gradient = Util.gradient(frame, entry.Colors or entry[3] or Palettes.Purple.Gradient, 90)
+		local label = Util.text(frame, { Text = tostring(entry.Text or entry[2] or key), TextSize = 11, Stroke = 1.6, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+		chips[key] = { frame = frame, gradient = gradient, label = label }
+		frame.MouseButton1Click:Connect(function()
+			element.Value = key
+			paint()
+			Util.safeCall(opts.Callback, key)
+		end)
+	end
+	function element:Set(key)
+		element.Value = key
+		paint()
+	end
+	function element:SetText(key, text)
+		if chips[key] then
+			chips[key].label.Text = tostring(text)
+		end
+	end
+	paint()
+	return self:_handle(holder, element)
+end
+
+-- Card grid: pooled item cards in columns (a refresh repaints the pool, never rebuilds it). Items = { { Name, Icon,
+-- Badge, RarityColor, Rarity, Value, Info, Extra, Pill, PillColors, Progress } }; Progress nil hides the bar.
+-- SetItems(items) returns nothing; SetPill(index, text, colors, progress) updates one card's pill / bar (timers).
+function Container:AddCardGrid(options)
+	local opts = type(options) == "table" and options or {}
+	local columns = opts.Columns or 2
+	local holder = Util.new("Frame", { Name = "CardGrid", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = self:_nextOrder(), Parent = self.List })
+	Util.new("UIGridLayout", { CellSize = UDim2.new(1 / columns, -5, 0, 78), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = holder })
+	local empty = Util.text(holder, { Text = opts.EmptyText or "Nothing here", TextSize = 12, Stroke = 1.4, TextColor3 = Theme.Muted, TextXAlignment = Enum.TextXAlignment.Center, Visible = false, ZIndex = 2 })
+	empty.LayoutOrder = 0
+	local pool = {}
+	local function makeCard()
+		local card = {}
+		card.frame = Util.new("Frame", { Name = "Card", BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 2, Parent = holder })
+		Util.corner(card.frame, 5)
+		card.stroke = Util.stroke(card.frame, Color3.new(0, 0, 0), 2)
+		card.tint = Util.new("UIGradient", { Parent = card.frame })
+		card.well = Util.new("Frame", { BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(46, 46), ZIndex = 3, Parent = card.frame })
+		Util.corner(card.well, 5)
+		card.wellStroke = Util.stroke(card.well, Theme.CardHighlight, 1.4)
+		card.icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ScaleType = Enum.ScaleType.Fit, ZIndex = 4, Parent = card.well })
+		card.badge = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, 4, 1, 4), Size = UDim2.fromOffset(18, 18), ScaleType = Enum.ScaleType.Fit, ZIndex = 5, Parent = card.well })
+		card.name = Util.text(card.frame, { TextSize = 12, Position = UDim2.fromOffset(58, 5), Size = UDim2.new(1, -62, 0, 15), ZIndex = 3 })
+		card.rarity = Util.text(card.frame, { TextSize = 9, Stroke = 1, Position = UDim2.fromOffset(58, 20), Size = UDim2.new(1, -62, 0, 11), ZIndex = 3 })
+		card.value = Util.text(card.frame, { TextSize = 11, Stroke = 1.4, RichText = true, TextColor3 = Palettes.Lime.Gradient[1], Position = UDim2.fromOffset(58, 32), Size = UDim2.new(1, -62, 0, 13), ZIndex = 3 })
+		card.extra = Util.text(card.frame, { TextSize = 9, Stroke = 1, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(58, 45), Size = UDim2.new(1, -62, 0, 11), ZIndex = 3 })
+		card.pill = Util.new("Frame", { AnchorPoint = Vector2.new(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Position = UDim2.new(1, -6, 1, -12), Size = UDim2.fromOffset(70, 16), ZIndex = 3, Parent = card.frame })
+		Util.corner(card.pill, 4)
+		Util.stroke(card.pill, Color3.new(0, 0, 0), 1.6)
+		card.pillGradient = Util.gradient(card.pill, Hud.Grey, 90)
+		card.pillText = Util.text(card.pill, { TextSize = 10, Stroke = 1.4, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 4 })
+		card.track = Util.new("Frame", { BackgroundColor3 = Theme.Trough, BorderSizePixel = 0, Position = UDim2.new(0, 6, 1, -8), Size = UDim2.new(1, -12, 0, 4), ZIndex = 3, Parent = card.frame })
+		Util.corner(card.track, 2)
+		card.progress = Util.new("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.fromScale(0, 1), ZIndex = 4, Parent = card.track })
+		Util.corner(card.progress, 2)
+		card.progressGradient = Util.gradient(card.progress, Hud.Grey, 0)
+		return card
+	end
+	local element = { Type = "CardGrid" }
+	function element:SetPill(index, text, colors, progress)
+		local card = pool[index]
+		if not card or not card.frame.Visible then
+			return
+		end
+		card.pill.Visible = text ~= nil and text ~= ""
+		card.pillText.Text = tostring(text or "")
+		Hud.setColors(card.pillGradient, colors or Hud.Grey)
+		card.track.Visible = type(progress) == "number"
+		if card.track.Visible then
+			card.progress.Size = UDim2.fromScale(math.clamp(progress, 0, 1), 1)
+			Hud.setColors(card.progressGradient, colors or Hud.Grey)
+		end
+	end
+	function element:SetItems(items)
+		items = type(items) == "table" and items or {}
+		empty.Visible = #items == 0
+		for index, item in items do
+			local card = pool[index]
+			if not card then
+				card = makeCard()
+				pool[index] = card
+			end
+			local color = typeof(item.RarityColor) == "Color3" and item.RarityColor or Theme.CardHighlight
+			card.frame.Visible = true
+			card.frame.LayoutOrder = index
+			card.tint.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, color:Lerp(Theme.Card, 0.55)), ColorSequenceKeypoint.new(0.6, Theme.Card), ColorSequenceKeypoint.new(1, Theme.Card) })
+			card.stroke.Color = item.Highlight and Palettes.Purple.Rim or Color3.new(0, 0, 0)
+			card.wellStroke.Color = color
+			if item.Icon ~= card.iconId then
+				card.iconId = item.Icon
+				Util.icon(card.icon, item.Icon)
+			end
+			card.badge.Visible = item.Badge ~= nil and item.Badge ~= ""
+			if card.badge.Visible and item.Badge ~= card.badgeId then
+				card.badgeId = item.Badge
+				Util.icon(card.badge, item.Badge)
+			end
+			card.name.Text = tostring(item.Name or "?")
+			card.name.TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.3)
+			card.rarity.Text = string.upper(tostring(item.Rarity or ""))
+			card.rarity.TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.15)
+			local info = item.Info and item.Info ~= "" and ('  <font color="#FFC83C">%s</font>'):format(tostring(item.Info)) or ""
+			card.value.Text = tostring(item.Value or "") .. info
+			card.extra.Text = tostring(item.Extra or "")
+			element:SetPill(index, item.Pill, item.PillColors, item.Progress)
+		end
+		for index = #items + 1, #pool do
+			pool[index].frame.Visible = false
+		end
+	end
+	element:SetItems(opts.Items or {})
+	return self:_handle(holder, element)
+end
+
+-- Info list: pooled text rows (left and right, both RichText); a row with Header = true is a coloured caption.
+-- SetRows(rows) with rows = { { Left, Right, Header, Colors } }.
+function Container:AddInfoList(options)
+	local opts = type(options) == "table" and options or {}
+	local holder = Util.new("Frame", { Name = "InfoList", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = self:_nextOrder(), Parent = self.List })
+	Util.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = holder })
+	local pool = {}
+	local element = { Type = "InfoList" }
+	function element:SetRows(rows)
+		rows = type(rows) == "table" and rows or {}
+		for index, row in rows do
+			local entry = pool[index]
+			if not entry then
+				local frame = Util.new("Frame", { BackgroundColor3 = Theme.Card, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 26), ZIndex = 2, Parent = holder })
+				Util.corner(frame, 4)
+				local left = Util.text(frame, { TextSize = 11, Stroke = 1.4, RichText = true, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(0.62, -10, 1, 0), ZIndex = 3 })
+				local right = Util.text(frame, { TextSize = 11, Stroke = 1.4, RichText = true, TextXAlignment = Enum.TextXAlignment.Right, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 0), Size = UDim2.new(0.38, -10, 1, 0), ZIndex = 3 })
+				entry = { frame = frame, left = left, right = right }
+				pool[index] = entry
+			end
+			entry.frame.Visible = true
+			entry.frame.LayoutOrder = index
+			entry.frame.BackgroundTransparency = row.Header and 1 or 0
+			entry.frame.Size = UDim2.new(1, 0, 0, row.Header and 18 or 26)
+			entry.left.Text = tostring(row.Left or "")
+			entry.left.TextColor3 = row.Header and ((row.Colors or Hud.Gold)[1]) or Theme.Text
+			entry.right.Text = tostring(row.Right or "")
+		end
+		for index = #rows + 1, #pool do
+			pool[index].frame.Visible = false
+		end
+	end
+	element:SetRows(opts.Rows or {})
+	return self:_handle(holder, element)
+end
 Container.Section = Container.AddSection
 Container.Toggle = Container.AddToggle
 Container.Slider = Container.AddSlider
