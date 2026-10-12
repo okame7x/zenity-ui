@@ -66,6 +66,7 @@ Library.Hud = {
 
 Library.Assets = {
 	Damier = "rbxassetid://385956923",
+	Studs = "rbxassetid://90325592797235",
 	Sunburst = "rbxassetid://130563114903838",
 	Logo = "rbxassetid://74314729534917",
 	OpenLogo = "rbxassetid://123727588877909",
@@ -184,31 +185,26 @@ function Util.text(parent, props)
 	end
 	return label
 end
+-- Stud tile size relative to the old checker tile (the stud tile reads at about twice the checker's cell).
+Util.studScale = 2
 
--- Seamless fading checkerboard (Check-UI §6.4): transparent at the top, textured at the bottom.
+-- Background texture: the game's own stud ("lego") tile, as its panels and buttons wear it (Pattern / StudBG: the
+-- tile in white at 0.75 transparency over the coloured face). Replaces the old fading checkerboard; the name and
+-- arguments stay so every caller keeps working (color and sequence are ignored, tile is the stud size).
 function Util.damier(parent, color, tile, zIndex, sequence)
-	local image = Util.new("ImageLabel", {
-		Name = "Damier",
+	local size = (tile or 22) * Util.studScale
+	return Util.new("ImageLabel", {
+		Name = "Studs",
 		BackgroundTransparency = 1,
-		Image = Assets.Damier,
-		ImageColor3 = color or Color3.new(0, 0, 0),
+		Image = Assets.Studs,
+		ImageColor3 = Color3.new(1, 1, 1),
+		ImageTransparency = 0.75,
 		ScaleType = Enum.ScaleType.Tile,
-		TileSize = UDim2.fromOffset(tile or 22, tile or 22),
+		TileSize = UDim2.fromOffset(size, size),
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = zIndex or 1,
 		Parent = parent,
 	})
-	Util.new("UIGradient", {
-		Rotation = 90,
-		Transparency = sequence or NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 1),
-			NumberSequenceKeypoint.new(0.3, 0.82),
-			NumberSequenceKeypoint.new(0.7, 0.35),
-			NumberSequenceKeypoint.new(1, 0.1),
-		}),
-		Parent = image,
-	})
-	return image
 end
 
 -- Recessed card: dark container, black border, translucent slate inner rim (Check-UI §6.8).
