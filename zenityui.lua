@@ -513,6 +513,7 @@ function Util.savePosition(key, position)
 end
 
 function Util.icon(imageLabel, icon)
+	imageLabel:SetAttribute("ZenityIcon", true)
 	if Util.isLucideName(icon) and Util.lucide == nil then
 		Util.pendingIcons[imageLabel] = icon
 		Util.startLucide()
@@ -572,7 +573,7 @@ function Util.screen(name, order, parent)
 	if old and old:IsA("ScreenGui") then
 		old:Destroy()
 	end
-	return Util.new("ScreenGui", {
+	local gui = Util.new("ScreenGui", {
 		Name = name,
 		ResetOnSpawn = false,
 		IgnoreGuiInset = true,
@@ -580,6 +581,21 @@ function Util.screen(name, order, parent)
 		DisplayOrder = order or 100,
 		Parent = target,
 	})
+	-- Every library screen is listed (the theme engine walks them); a new one follows an active theme at once.
+	for index = #Library.Screens, 1, -1 do
+		if not Library.Screens[index].Parent then
+			table.remove(Library.Screens, index)
+		end
+	end
+	table.insert(Library.Screens, gui)
+	if Library.ThemeState and (Library.ThemeState.accent or Library.ThemeState.icon) then
+		task.defer(function()
+			if gui.Parent then
+				Library:ThemeGui(gui)
+			end
+		end)
+	end
+	return gui
 end
 
 function Util.isPress(input)
@@ -1689,6 +1705,7 @@ function Container:AddAssetFilter(options)
 		local color = typeof(item.RarityColor) == "Color3" and item.RarityColor or Theme.CardHighlight
 		local row = { id = id, search = (tostring(item.Name or "") .. " " .. tostring(id)):lower() }
 		row.frame = Util.new("TextButton", { AutoButtonColor = false, BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Text = "", Size = UDim2.new(1, 0, 0, ROW), ZIndex = 3, Parent = holder })
+		row.frame:SetAttribute("ZenityNoTheme", true)
 		Util.corner(row.frame, 5)
 		row.stroke = Util.stroke(row.frame, Color3.new(0, 0, 0), 2)
 		Util.new("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, color:Lerp(Theme.Card, 0.6)), ColorSequenceKeypoint.new(0.5, Theme.Card), ColorSequenceKeypoint.new(1, Theme.Card) }), Parent = row.frame })
@@ -1799,6 +1816,7 @@ function Container:AddAssetLogItem(item)
 	chip.BackgroundColor3 = Theme.Recess
 	Util.corner(chip, 4)
 	Util.stroke(chip, Color3.new(0, 0, 0), 1.6)
+	frame:SetAttribute("ZenityNoTheme", true)
 	local element = self:_handle(frame, { Type = "LogItem" })
 	-- Repaints the same card with another entry (pooled logs reuse their oldest card instead of building a new one).
 	function element:SetItem(data)
@@ -1966,6 +1984,7 @@ function Container:AddCardGrid(options)
 	local function makeCard()
 		local card = {}
 		card.frame = Util.new("Frame", { Name = "Card", BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 2, Parent = holder })
+		card.frame:SetAttribute("ZenityNoTheme", true)
 		Util.corner(card.frame, 5)
 		card.stroke = Util.stroke(card.frame, Color3.new(0, 0, 0), 2)
 		card.tint = Util.new("UIGradient", { Parent = card.frame })
@@ -2099,6 +2118,205 @@ Container.Progress = Container.AddProgress
 
 local Window = {}
 Window.__index = Window
+-- Theme engine. Accent: every purple in the library's screens (and in screens registered with Library:ThemeGui) takes
+-- the accent's hue and saturation while keeping its own brightness, so the light and dark shades stay shades; nil puts
+-- the original purples back. Icon: a tint for every icon image (Util.icon), nil for their own colours. Originals are
+-- remembered per instance, so the theme can change any number of times; new instances are themed as they appear.
+Library.ThemeState = { accent = nil, icon = nil, originals = setmetatable({}, { __mode = "k" }), screens = setmetatable({}, { __mode = "k" }) }
+local ThemeState = Library.ThemeState
+local THEMED = {
+	GuiObject = { "BackgroundColor3" },
+	ImageLabel = { "ImageColor3" },
+	ImageButton = { "ImageColor3" },
+	TextLabel = { "TextColor3", "TextStrokeColor3" },
+	TextButton = { "TextColor3", "TextStrokeColor3" },
+	TextBox = { "TextColor3", "TextStrokeColor3" },
+	UIStroke = { "Color" },
+	UIGradient = { "Color" },
+}
+
+-- Purple: hue 250-310 degrees with some saturation (the library's whole purple family).
+local function isPurple(color)
+	local hue, saturation = color:ToHSV()
+	return saturation > 0.18 and hue >= 0.69 and hue <= 0.86
+end
+
+function Library.ThemeColor(color)
+	local accent = ThemeState.accent
+	if typeof(color) ~= "Color3" or not accent or not isPurple(color) then
+		return color
+	end
+	local _, saturation, value = color:ToHSV()
+	local accentHue, accentSaturation = accent:ToHSV()
+	return Color3.fromHSV(accentHue, math.clamp(saturation * accentSaturation, 0, 1), value)
+end
+
+local function themeValue(value)
+	if typeof(value) == "Color3" then
+		return Library.ThemeColor(value)
+	elseif typeof(value) == "ColorSequence" then
+		local points = {}
+		for index, point in value.Keypoints do
+			points[index] = ColorSequenceKeypoint.new(point.Time, Library.ThemeColor(point.Value))
+		end
+		return ColorSequence.new(points)
+	end
+	return value
+end
+
+-- Rarity-coloured cards (tagged ZenityNoTheme) and the hub's rarity styling keep their colours: a purple there is a
+-- rarity, not the accent.
+local function themeExcluded(object)
+	local node = object
+	for _ = 1, 10 do
+		if not node then return false end
+		if node:GetAttribute("ZenityNoTheme") or node:GetAttribute("GhostPepperStyle") or node:GetAttribute("GhostPepperRarityStyled") then
+			return true
+		end
+		node = node.Parent
+	end
+	return false
+end
+
+function Library.ThemeObject(object)
+	if themeExcluded(object) then return end
+	local saved = ThemeState.originals[object]
+	for className, properties in THEMED do
+		if object:IsA(className) then
+			for _, property in properties do
+				local ok, current = pcall(function() return object[property] end)
+				if ok then
+					saved = saved or {}
+					ThemeState.originals[object] = saved
+					-- A colour the UI set itself since our last pass (a toggle turning green, a tab picked) is the new original.
+					local applied = saved["@" .. property]
+					if saved[property] == nil or (applied ~= nil and current ~= applied) then
+						saved[property] = current
+					end
+					local wanted = themeValue(saved[property])
+					if property == "ImageColor3" and ThemeState.icon and object:GetAttribute("ZenityIcon") then
+						wanted = ThemeState.icon
+					end
+					saved["@" .. property] = wanted
+					if current ~= wanted then
+						pcall(function() object[property] = wanted end)
+					end
+				end
+			end
+		end
+	end
+end
+
+-- A screen under the theme: every descendant now, every one that appears later (themed on the next frame, once its
+-- own colours are set).
+function Library:ThemeGui(gui)
+	if typeof(gui) ~= "Instance" or ThemeState.screens[gui] then
+		return
+	end
+	ThemeState.screens[gui] = gui.DescendantAdded:Connect(function(object)
+		task.defer(function()
+			if object.Parent and (ThemeState.accent or ThemeState.icon) then
+				Library.ThemeObject(object)
+			end
+		end)
+	end)
+	for _, object in gui:GetDescendants() do
+		Library.ThemeObject(object)
+	end
+end
+
+-- The library's own colour tables follow too, so controls built after the change are born in the theme.
+local themeTables = { Library.Palettes.Purple, Library.Hud.Bloom, Library.Hud.Lilac, Library.Theme }
+local tableOriginals = {}
+local function themeTable(source)
+	tableOriginals[source] = tableOriginals[source] or table.clone(source)
+	for key, value in tableOriginals[source] do
+		if type(value) == "table" then
+			for index, entry in value do
+				source[key][index] = themeValue(entry)
+			end
+		else
+			source[key] = themeValue(value)
+		end
+	end
+end
+
+function Library:SetTheme(options)
+	options = type(options) == "table" and options or {}
+	ThemeState.accent = typeof(options.Accent) == "Color3" and options.Accent or nil
+	ThemeState.icon = typeof(options.Icon) == "Color3" and options.Icon or nil
+	for _, source in themeTables do
+		themeTable(source)
+	end
+	for _, gui in Library.Screens do
+		if gui.Parent then
+			Library:ThemeGui(gui)
+		end
+	end
+	for gui in ThemeState.screens do
+		if gui.Parent then
+			for _, object in gui:GetDescendants() do
+				Library.ThemeObject(object)
+			end
+		end
+	end
+end
+
+-- Window background image: behind everything inside the window (rounded like it), any icon source (asset id, http
+-- URL or workspace file), at `Transparency`, animated by `Animation`: "None", "Scroll" (tiled, drifting diagonally),
+-- "Pulse" (fading in and out), "Zoom" (slowly breathing in) or "Rotate" (slowly turning, oversized). `Speed` scales
+-- the motion. Nil / "" image removes it. The motion stops with ReducedMotion or while the window is hidden.
+function Window:SetBackground(image, options)
+	options = type(options) == "table" and options or {}
+	if self._background then
+		self._background.connection:Disconnect()
+		self._background.holder:Destroy()
+		self._background = nil
+	end
+	if image == nil or image == "" then
+		return
+	end
+	local holder = Util.new("Frame", { Name = "ThemeBackground", BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = self.Main })
+	Util.corner(holder, 6)
+	local animation = options.Animation or "None"
+	local tile = 180
+	local label = Util.new("ImageLabel", {
+		Name = "Image",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = animation == "Rotate" and UDim2.fromScale(1.8, 1.8) or animation == "Scroll" and UDim2.new(1, tile, 1, tile) or UDim2.fromScale(1, 1),
+		ScaleType = animation == "Scroll" and Enum.ScaleType.Tile or Enum.ScaleType.Crop,
+		TileSize = UDim2.fromOffset(tile, tile),
+		ImageTransparency = math.clamp(tonumber(options.Transparency) or 0.6, 0, 1),
+		ZIndex = 1,
+		Parent = holder,
+	})
+	local scale = Util.new("UIScale", { Parent = label })
+	Util.icon(label, image)
+	local base = label.ImageTransparency
+	local speed = math.max(tonumber(options.Speed) or 1, 0)
+	local clock = 0
+	local connection = runService.RenderStepped:Connect(function(deltaTime)
+		if animation == "None" or Library.ReducedMotion or self.ReducedMotion or not self.Visible then
+			return
+		end
+		clock += deltaTime * speed
+		if animation == "Scroll" then
+			local offset = (clock * 24) % tile
+			label.Position = UDim2.new(0.5, -offset, 0.5, -offset)
+		elseif animation == "Pulse" then
+			label.ImageTransparency = base + (1 - base) * (0.5 - math.cos(clock * 1.5) * 0.5) * 0.6
+		elseif animation == "Zoom" then
+			scale.Scale = 1.06 + math.sin(clock * 0.6) * 0.06
+		elseif animation == "Rotate" then
+			label.Rotation = (clock * 6) % 360
+		end
+	end)
+	self._background = { holder = holder, label = label, connection = connection }
+	table.insert(self._connections, connection)
+end
+
 
 -- 3D beveled square header button (Check-UI §3.1 for the close [X]; amber for minimize).
 local function headerButton(parent, text, palette, offset)
@@ -2545,7 +2763,7 @@ function Window:SelectTab(target)
 	target._parts.setPalette(Palettes.Purple)
 	Util.tween(target._idle, 0.15, { BackgroundTransparency = 1 })
 	target._caption.TextColor3 = Theme.Text
-	target._icon.ImageColor3 = Theme.Text
+	target._icon.ImageColor3 = Library.ThemeState.icon or Theme.Text
 	-- New page slides up a little and fades its rows in.
 	local page = target.Page
 	page.Visible = true
@@ -3133,6 +3351,7 @@ function Hud.stealCard(panel, list)
 		card.canUp, card.canDown = item.CanUp == true, item.CanDown == true
 		frame.LayoutOrder = order
 		frame.Visible = true
+		frame:SetAttribute("ZenityNoTheme", true)
 		local color = typeof(item.RarityColor) == "Color3" and item.RarityColor or Theme.CardHighlight
 		-- Featured (being stolen / the pick) is the biggest with a purple rim; BEST is a step up with a gold one.
 		local best = item.Tag == "BEST"
