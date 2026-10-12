@@ -2662,7 +2662,7 @@ end
 function Hud.pill(parent, text, colors, layoutOrder)
 	local pill = Util.new("Frame", { Name = "Pill", BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = layoutOrder or 0, Parent = parent })
 	Util.corner(pill, 4)
-	Util.stroke(pill, Color3.new(0, 0, 0), 2)
+	Util.stroke(pill, Color3.new(0, 0, 0), 1.5)
 	local gradient = Util.gradient(pill, colors or Hud.Grey, 90)
 	Util.new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), Parent = pill })
 	-- A real UIStroke on pill text: the legacy text stroke looked blotchy at these sizes (pills are few, cheap enough).
@@ -2791,8 +2791,9 @@ function Library:CreateStatus(opts)
 	statePill.Size = UDim2.fromOffset(0, 18)
 	local tagPill, tagText = Hud.pill(pills, "", Hud.Bloom, 2)
 	tagPill.Size = UDim2.fromOffset(0, 18)
-	local title = Util.text(frame, { Name = "Title", TextSize = 15, Position = UDim2.fromOffset(84, 51), Size = UDim2.new(1, -94, 0, 18), ZIndex = 2 })
-	local detail = Util.text(frame, { Name = "Detail", TextSize = 11, Stroke = 1.2, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(84, 70), Size = UDim2.new(1, -94, 0, 14), ZIndex = 2 })
+	-- Title and detail outlined with a real UIStroke: the legacy text stroke smudged at these sizes.
+	local title = Util.text(frame, { Name = "Title", TextSize = 15, Stroke = 1.5, UIStroke = true, Position = UDim2.fromOffset(84, 51), Size = UDim2.new(1, -94, 0, 18), ZIndex = 2 })
+	local detail = Util.text(frame, { Name = "Detail", TextSize = 11, Stroke = 1, UIStroke = true, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(84, 70), Size = UDim2.new(1, -94, 0, 14), ZIndex = 2 })
 	local chipRow = Util.new("Frame", { BackgroundTransparency = 1, ClipsDescendants = true, Position = UDim2.fromOffset(84, 69), Size = UDim2.new(1, -94, 0, 16), Visible = false, ZIndex = 2, Parent = frame })
 	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = chipRow })
 	local chipPool = {}
@@ -3281,17 +3282,17 @@ function Library:CreateStealPanel(opts)
 	end
 	-- The icon is kept on its own image: re-applied whenever it went blank or was swapped (a late Lucide load, a pooled
 	-- label reused elsewhere); a "$" stands in while the set is unavailable.
-	-- Lucide's hand-coins as its direct asset (no wait on the icon set download).
 	local buttonIcon = opts.ButtonIcon or "rbxassetid://126990543175462"
-	local iconFallback = toggleParts.icon and Util.text(toggleParts.icon.Parent, {
+	local iconLabel = toggleParts.icon
+	local iconFallback = iconLabel and Util.text(iconLabel.Parent, {
 		Text = "$", TextSize = 30, Stroke = 2.6, TextXAlignment = Enum.TextXAlignment.Center,
-		Size = UDim2.fromScale(1, 1), ZIndex = toggleParts.icon.ZIndex,
+		Size = UDim2.fromScale(1, 1), ZIndex = iconLabel.ZIndex,
 	})
 	if iconFallback then
 		iconFallback.Visible = false
 	end
 	local function keepIcon()
-		local icon = toggleParts.icon
+		local icon = iconLabel
 		if not icon then return end
 		local image, offset, rectSize = Util.resolveIcon(buttonIcon)
 		if image then
@@ -3305,6 +3306,56 @@ function Library:CreateStealPanel(opts)
 			iconFallback.Visible = image == nil and Util.lucide == false
 		end
 	end
+	-- The game's own button look: opts.ButtonTemplate() returns one of its right-column buttons; a copy of it (its
+	-- gradient, both strokes, the stud Pattern and the icon slot, everything else stripped) replaces our bevel, with
+	-- our icon in its slot. Tried again on the alignment ticks until the game's HUD is there.
+	local KEEP = { Pattern = true, ImageLabel = true }
+	local templated = false
+	local function useTemplate()
+		if templated or type(opts.ButtonTemplate) ~= "function" then return end
+		local ok, source = pcall(opts.ButtonTemplate)
+		if not ok or typeof(source) ~= "Instance" or not source:IsA("GuiButton") then return end
+		local copied, copy = pcall(function()
+			local archivable = source.Archivable
+			source.Archivable = true
+			local result = source:Clone()
+			source.Archivable = archivable
+			return result
+		end)
+		if not copied or not copy then return end
+		for _, child in copy:GetChildren() do
+			local keep = KEEP[child.Name] or child:IsA("UIGradient") or child:IsA("UIStroke") or child:IsA("UICorner")
+			if not keep then
+				child:Destroy()
+			end
+		end
+		for _, object in copy:GetDescendants() do
+			if object:IsA("LuaSourceContainer") then
+				object:Destroy()
+			end
+		end
+		copy.Name = "StealToggle"
+		copy.AnchorPoint = Vector2.new(0.5, 0.5)
+		copy.Position = UDim2.fromScale(0.5, 0.5)
+		copy.Size = UDim2.fromScale(1, 1)
+		copy.Visible = true
+		copy.ZIndex = 3
+		copy.Parent = buttonHolder
+		local slot = copy:FindFirstChild("ImageLabel")
+		if slot and slot:IsA("ImageLabel") then
+			iconLabel = slot
+			if iconFallback then
+				iconFallback.Parent = copy
+			end
+		end
+		copy.Activated:Connect(function()
+			panel:SetCollapsed(not panel.Collapsed)
+		end)
+		toggle.Visible = false
+		templated = true
+		keepIcon()
+	end
+	useTemplate()
 	-- Alignment with the game's own button column: opts.AlignWith() returns its first visible button and the one
 	-- under it; ours takes the first one's size and sits one step (their spacing) above it, re-checked every half
 	-- second (their HUD scales with the screen). Without them it keeps its default spot and the responsive scale.
@@ -3327,6 +3378,7 @@ function Library:CreateStealPanel(opts)
 			return
 		end
 		alignClock = 0
+		useTemplate()
 		keepIcon()
 		local ok, top, below = pcall(function()
 			if type(opts.AlignWith) == "function" then
@@ -3351,6 +3403,14 @@ function Library:CreateStealPanel(opts)
 			return
 		end
 		goodSize = size
+		-- Same screen space as the game's HUD (topbar inset / safe insets), so its AbsolutePosition maps onto ours.
+		local hudGui = top:FindFirstAncestorWhichIsA("ScreenGui")
+		if hudGui then
+			if gui.IgnoreGuiInset ~= hudGui.IgnoreGuiInset then gui.IgnoreGuiInset = hudGui.IgnoreGuiInset end
+			pcall(function()
+				if gui.ScreenInsets ~= hudGui.ScreenInsets then gui.ScreenInsets = hudGui.ScreenInsets end
+			end)
+		end
 		local step = (typeof(below) == "Instance" and below:IsA("GuiObject")) and (below.AbsolutePosition.Y - top.AbsolutePosition.Y) or (size.Y * 1.35)
 		if step < size.Y * 0.9 or step > size.Y * 2.5 then
 			step = size.Y * 1.35
