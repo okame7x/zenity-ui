@@ -2305,6 +2305,355 @@ function Library:SetTheme(options)
 	end
 end
 
+-- GIF backgrounds. Roblox cannot show a GIF, so the file is decoded here (LZW frames composited with their disposal and
+-- transparency), up to GIF_MAX_FRAMES evenly picked frames are scaled into one sprite sheet no bigger than 1024 x 1024,
+-- written as a PNG (stored deflate) to ZenityUI/ and played by moving ImageRectOffset. The sheet and its layout are
+-- cached on disk by the source's hash, so a GIF is only decoded once.
+local GIF_MAX_FRAMES, GIF_SHEET = 36, 1024
+local Gif = {}
+
+local function yieldEvery(state, every)
+	state.n = (state.n or 0) + 1
+	if state.n % every == 0 then
+		task.wait()
+		Util.safeCall(Library.RestoreIdentity)
+	end
+end
+
+-- Structure of the file: screen size, global palette, and every frame's rectangle, palette, transparency, disposal,
+-- delay and compressed data.
+function Gif.parse(data)
+	local byte, len = string.byte, #data
+	if data:sub(1, 3) ~= "GIF" then return nil, "not a GIF" end
+	local function u16(at) return byte(data, at) + byte(data, at + 1) * 256 end
+	local width, height, packed = u16(7), u16(9), byte(data, 11)
+	local pos = 14
+	local function readTable(flags, at)
+		local size = 2 ^ ((flags % 8) + 1)
+		local colors = {}
+		for index = 0, size - 1 do
+			local base = at + index * 3
+			colors[index] = { byte(data, base) or 0, byte(data, base + 1) or 0, byte(data, base + 2) or 0 }
+		end
+		return colors, at + size * 3
+	end
+	local global
+	if packed >= 128 then
+		global, pos = readTable(packed, pos)
+	end
+	local frames, control = {}, nil
+	while pos <= len do
+		local block = byte(data, pos)
+		if block == 0x21 then
+			local label = byte(data, pos + 1)
+			pos += 2
+			if label == 0xF9 then
+				local flags = byte(data, pos + 1)
+				control = {
+					disposal = math.floor(flags / 4) % 8,
+					transparent = flags % 2 == 1 and byte(data, pos + 4) or nil,
+					delay = u16(pos + 2) / 100,
+				}
+			end
+			while pos <= len do
+				local size = byte(data, pos)
+				pos += 1
+				if size == 0 then break end
+				pos += size
+			end
+		elseif block == 0x2C then
+			local frame = { left = u16(pos + 1), top = u16(pos + 3), width = u16(pos + 5), height = u16(pos + 7) }
+			local flags = byte(data, pos + 9)
+			pos += 10
+			frame.interlaced = math.floor(flags / 64) % 2 == 1
+			if flags >= 128 then
+				frame.colors, pos = readTable(flags, pos)
+			else
+				frame.colors = global or {}
+			end
+			frame.minCode = byte(data, pos)
+			pos += 1
+			local parts = {}
+			while pos <= len do
+				local size = byte(data, pos)
+				pos += 1
+				if size == 0 then break end
+				table.insert(parts, data:sub(pos, pos + size - 1))
+				pos += size
+			end
+			frame.data = table.concat(parts)
+			frame.disposal = control and control.disposal or 0
+			frame.transparent = control and control.transparent
+			frame.delay = control and control.delay or 0.1
+			control = nil
+			table.insert(frames, frame)
+		elseif block == 0x3B then
+			break
+		else
+			pos += 1
+		end
+	end
+	if #frames == 0 then return nil, "no frames" end
+	return { width = width, height = height, frames = frames }
+end
+
+-- LZW-decoded colour indices of one frame (rows in display order).
+function Gif.decode(frame, state)
+	local data, minCode = frame.data, frame.minCode
+	local count = frame.width * frame.height
+	local out = buffer.create(math.max(count, 1))
+	local clear, stop = 2 ^ minCode, 2 ^ minCode + 1
+	local codeSize, nextCode = minCode + 1, stop + 1
+	local prefix, suffix = table.create(4096, 0), table.create(4096, 0)
+	for index = 0, clear - 1 do
+		suffix[index + 1] = index
+	end
+	local stack = table.create(4096, 0)
+	local bitPos, dataBits = 0, #data * 8
+	local written, old, firstChar = 0, -1, 0
+	local byte = string.byte
+	while written < count and bitPos + codeSize <= dataBits do
+		-- The next code, read from up to three bytes at once (LSB first).
+		local at = bitPos // 8 + 1
+		local window = (byte(data, at) or 0) + (byte(data, at + 1) or 0) * 256 + (byte(data, at + 2) or 0) * 65536
+		local code = (window // 2 ^ (bitPos % 8)) % 2 ^ codeSize
+		bitPos += codeSize
+		if code == clear then
+			codeSize, nextCode, old = minCode + 1, stop + 1, -1
+		elseif code == stop then
+			break
+		elseif old == -1 then
+			buffer.writeu8(out, written, suffix[code + 1])
+			written += 1
+			old, firstChar = code, suffix[code + 1]
+		else
+			local incoming, top = code, 0
+			if code >= nextCode then
+				top += 1
+				stack[top] = firstChar
+				code = old
+			end
+			while code > stop do
+				top += 1
+				stack[top] = suffix[code + 1]
+				code = prefix[code + 1]
+			end
+			firstChar = suffix[code + 1]
+			top += 1
+			stack[top] = firstChar
+			for index = top, 1, -1 do
+				if written >= count then break end
+				buffer.writeu8(out, written, stack[index])
+				written += 1
+			end
+			if nextCode < 4096 then
+				prefix[nextCode + 1], suffix[nextCode + 1] = old, firstChar
+				nextCode += 1
+				if nextCode == 2 ^ codeSize and codeSize < 12 then
+					codeSize += 1
+				end
+			end
+			old = incoming
+		end
+		yieldEvery(state, 60000)
+	end
+	if not frame.interlaced then return out end
+	-- Interlaced rows come in four passes; put them back in display order.
+	local ordered = buffer.create(math.max(count, 1))
+	local row = 0
+	for _, pass in { { 0, 8 }, { 4, 8 }, { 2, 4 }, { 1, 2 } } do
+		for y = pass[1], frame.height - 1, pass[2] do
+			buffer.copy(ordered, y * frame.width, out, row * frame.width, frame.width)
+			row += 1
+		end
+	end
+	return ordered
+end
+
+local crcTable
+local function crc32(buf, from, to)
+	if not crcTable then
+		crcTable = {}
+		for n = 0, 255 do
+			local c = n
+			for _ = 1, 8 do
+				c = bit32.band(c, 1) == 1 and bit32.bxor(0xEDB88320, bit32.rshift(c, 1)) or bit32.rshift(c, 1)
+			end
+			crcTable[n] = c
+		end
+	end
+	local c = 0xFFFFFFFF
+	for index = from, to do
+		c = bit32.bxor(crcTable[bit32.band(bit32.bxor(c, buffer.readu8(buf, index)), 0xFF)], bit32.rshift(c, 8))
+	end
+	return bit32.bxor(c, 0xFFFFFFFF)
+end
+
+-- RGBA pixels -> PNG string (filter 0 rows, zlib with stored blocks: no compression, but tiny code).
+function Gif.png(width, height, pixels, state)
+	local rowSize = width * 4 + 1
+	local rawSize = rowSize * height
+	local blocks = math.max(1, math.ceil(rawSize / 65535))
+	local zlibSize = 2 + rawSize + blocks * 5 + 4
+	local out = buffer.create(8 + 25 + 12 + zlibSize + 12)
+	local at = 0
+	local function u8(v) buffer.writeu8(out, at, v) at += 1 end
+	local function u32(v) buffer.writeu8(out, at, bit32.rshift(v, 24) % 256) buffer.writeu8(out, at + 1, bit32.rshift(v, 16) % 256) buffer.writeu8(out, at + 2, bit32.rshift(v, 8) % 256) buffer.writeu8(out, at + 3, v % 256) at += 4 end
+	for _, v in { 137, 80, 78, 71, 13, 10, 26, 10 } do u8(v) end
+	-- IHDR
+	u32(13)
+	local typeAt = at
+	for _, v in { 73, 72, 68, 82 } do u8(v) end
+	u32(width) u32(height) u8(8) u8(6) u8(0) u8(0) u8(0)
+	u32(crc32(out, typeAt, at - 1))
+	-- IDAT: zlib header, stored blocks over the filtered rows, Adler-32.
+	u32(zlibSize)
+	typeAt = at
+	for _, v in { 73, 68, 65, 84 } do u8(v) end
+	u8(0x78) u8(0x01)
+	local a, b = 1, 0
+	local remaining, rowIndex, column = rawSize, 0, 0
+	while remaining > 0 do
+		local size = math.min(65535, remaining)
+		remaining -= size
+		u8(remaining == 0 and 1 or 0)
+		buffer.writeu16(out, at, size) buffer.writeu16(out, at + 2, bit32.bnot(size) % 65536) at += 4
+		for _ = 1, size do
+			local value
+			if column == 0 then
+				value = 0
+			else
+				value = buffer.readu8(pixels, rowIndex * width * 4 + column - 1)
+			end
+			buffer.writeu8(out, at, value)
+			at += 1
+			a = (a + value) % 65521
+			b = (b + a) % 65521
+			column += 1
+			if column == rowSize then
+				column, rowIndex = 0, rowIndex + 1
+			end
+		end
+		yieldEvery(state, 2)
+	end
+	u32(b * 65536 + a)
+	u32(crc32(out, typeAt, at - 1))
+	-- IEND
+	u32(0)
+	typeAt = at
+	for _, v in { 73, 69, 78, 68 } do u8(v) end
+	u32(crc32(out, typeAt, at - 1))
+	return buffer.readstring(out, 0, at)
+end
+
+-- The sprite sheet for a GIF's bytes: { asset, columns, rows, cellWidth, cellHeight, frames, fps } (cached by `key`).
+function Gif.sheet(data, key)
+	local folder = "ZenityUI"
+	local path, meta = folder .. "/gif_" .. key .. ".png", folder .. "/gif_" .. key .. ".json"
+	if isfile and isfile(path) and isfile(meta) then
+		local ok, layout = pcall(function() return httpService:JSONDecode(readfile(meta)) end)
+		if ok and type(layout) == "table" then
+			layout.asset = getcustomasset(path)
+			return layout
+		end
+	end
+	local gif, why = Gif.parse(data)
+	if not gif then return nil, why end
+	local total = #gif.frames
+	local picks = math.min(total, GIF_MAX_FRAMES)
+	-- The grid (columns x rows) that leaves every frame the largest inside the sheet.
+	local columns, rows, scale = 1, picks, 0
+	for tryColumns = 1, picks do
+		local tryRows = math.ceil(picks / tryColumns)
+		local tryScale = math.min(1, (GIF_SHEET / tryColumns) / gif.width, (GIF_SHEET / tryRows) / gif.height)
+		if tryScale > scale then
+			columns, rows, scale = tryColumns, tryRows, tryScale
+		end
+	end
+	local cellWidth, cellHeight = math.max(1, math.floor(gif.width * scale)), math.max(1, math.floor(gif.height * scale))
+	local sheetWidth, sheetHeight = cellWidth * columns, cellHeight * rows
+	local sheet = buffer.create(sheetWidth * sheetHeight * 4)
+	local canvas = buffer.create(gif.width * gif.height * 4)
+	local wanted, totalDelay = {}, 0
+	for index = 1, picks do
+		wanted[math.floor((index - 1) * total / picks) + 1] = index
+	end
+	local state = {}
+	for index, frame in gif.frames do
+		totalDelay += frame.delay > 0 and frame.delay or 0.1
+		local saved = frame.disposal == 3 and buffer.create(buffer.len(canvas)) or nil
+		if saved then buffer.copy(saved, 0, canvas) end
+		local indices = Gif.decode(frame, state)
+		for y = 0, frame.height - 1 do
+			local cy = frame.top + y
+			if cy < gif.height then
+				for x = 0, frame.width - 1 do
+					local cx = frame.left + x
+					if cx < gif.width then
+						local colorIndex = buffer.readu8(indices, y * frame.width + x)
+						if colorIndex ~= frame.transparent then
+							local color = frame.colors[colorIndex]
+							if color then
+								local at = (cy * gif.width + cx) * 4
+								buffer.writeu8(canvas, at, color[1]) buffer.writeu8(canvas, at + 1, color[2])
+								buffer.writeu8(canvas, at + 2, color[3]) buffer.writeu8(canvas, at + 3, 255)
+							end
+						end
+					end
+				end
+			end
+			yieldEvery(state, 40)
+		end
+		local slot = wanted[index]
+		if slot then
+			local column, row = (slot - 1) % columns, math.floor((slot - 1) / columns)
+			for y = 0, cellHeight - 1 do
+				local sy = math.min(gif.height - 1, math.floor(y / scale))
+				for x = 0, cellWidth - 1 do
+					local sx = math.min(gif.width - 1, math.floor(x / scale))
+					buffer.writeu32(sheet, ((row * cellHeight + y) * sheetWidth + column * cellWidth + x) * 4, buffer.readu32(canvas, (sy * gif.width + sx) * 4))
+				end
+				yieldEvery(state, 40)
+			end
+		end
+		if frame.disposal == 2 then
+			for y = frame.top, math.min(gif.height, frame.top + frame.height) - 1 do
+				buffer.fill(canvas, (y * gif.width + frame.left) * 4, 0, math.min(frame.width, gif.width - frame.left) * 4)
+			end
+		elseif saved then
+			canvas = saved
+		end
+	end
+	local pngData = Gif.png(sheetWidth, sheetHeight, sheet, state)
+	if not (isfolder and isfolder(folder)) then makefolder(folder) end
+	writefile(path, pngData)
+	local layout = { columns = columns, rows = rows, cellWidth = cellWidth, cellHeight = cellHeight, frames = picks,
+		fps = math.clamp(picks / math.max(totalDelay, 0.05), 1, 30) }
+	writefile(meta, httpService:JSONEncode(layout))
+	layout.asset = getcustomasset(path)
+	return layout
+end
+
+-- A GIF source: an http(s) URL ending in .gif or a workspace .gif file. Returns its bytes and a cache key.
+function Gif.load(source)
+	if type(source) ~= "string" then return nil end
+	local lower = source:lower()
+	local data
+	if lower:find("^https?://") then
+		local ok, response = pcall(function() return request({ Url = source, Method = "GET" }) end)
+		data = ok and response and response.Body
+	elseif lower:find("%.gif$") and isfile and isfile(source) then
+		data = readfile(source)
+	end
+	if type(data) ~= "string" or data:sub(1, 3) ~= "GIF" then return nil end
+	local hash = 5381
+	for index = 1, #source do
+		hash = (hash * 33 + string.byte(source, index)) % 4294967296
+	end
+	return data, string.format("%08x", hash)
+end
+Library.Gif = Gif
+
 -- Window background image: behind everything inside the window (rounded like it), any icon source (asset id, http
 -- URL or workspace file), at `Transparency`, animated by `Animation`: "None", "Scroll" (tiled, drifting diagonally),
 -- "Pulse" (fading in and out), "Zoom" (slowly breathing in) or "Rotate" (slowly turning, oversized). `Speed` scales
@@ -2336,11 +2685,36 @@ function Window:SetBackground(image, options)
 		Parent = holder,
 	})
 	local scale = Util.new("UIScale", { Parent = label })
-	Util.icon(label, image)
+	-- A GIF is decoded into a sprite sheet in the background (first time only) and played frame by frame; anything
+	-- else goes through Util.icon (asset id, image URL, workspace file).
+	local gif
+	local gifData, gifKey = Gif.load(image)
+	if gifData then
+		task.spawn(function()
+			local ok, layout = pcall(Gif.sheet, gifData, gifKey)
+			Util.safeCall(Library.RestoreIdentity)
+			if ok and type(layout) == "table" and label.Parent then
+				label.Image = layout.asset
+				label.ImageRectSize = Vector2.new(layout.cellWidth, layout.cellHeight)
+				label.ImageRectOffset = Vector2.zero
+				gif = layout
+			elseif not ok then
+				warn("[Zenity UI] GIF background: " .. tostring(layout))
+			end
+		end)
+	else
+		Util.icon(label, image)
+	end
 	local base = label.ImageTransparency
 	local speed = math.max(tonumber(options.Speed) or 1, 0)
-	local clock = 0
+	local clock, gifClock = 0, 0
 	local connection = runService.RenderStepped:Connect(function(deltaTime)
+		-- GIF frames play at the GIF's own pace, whatever the motion style.
+		if gif and label.Parent then
+			gifClock += deltaTime
+			local frame = math.floor(gifClock * gif.fps) % gif.frames
+			label.ImageRectOffset = Vector2.new((frame % gif.columns) * gif.cellWidth, math.floor(frame / gif.columns) * gif.cellHeight)
+		end
 		if animation == "None" or Library.ReducedMotion or self.ReducedMotion or not self.Visible then
 			return
 		end
