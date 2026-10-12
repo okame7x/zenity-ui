@@ -167,7 +167,7 @@ function Util.text(parent, props)
 	-- nothing to render (hundreds of UIStrokes were what made opening the window drop frames).
 	if props.Stroke ~= false then
 		local thickness = props.Stroke or math.clamp(size * 0.085, 1, 2.8)
-		if size >= 18 then
+		if size >= 18 or props.UIStroke then
 			Util.new("UIStroke", {
 				Name = "TextStroke",
 				Color = props.StrokeColor or Theme.Ink,
@@ -584,27 +584,18 @@ function Util.isMove(input)
 end
 
 -- Drags target by handle, kept inside the screen. A drag that started over a "NoDrag" child is ignored.
+-- The mouse fires InputChanged many times per frame (high polling rates); moving the whole window on each one
+-- re-laid it out several times a frame and dropped FPS. Moves are only recorded there and applied once per frame,
+-- on a RenderStepped connection that lives only while the drag does.
 function Util.drag(handle, target, connections)
-	local dragging, startInput, startPosition
-	table.insert(connections, handle.InputBegan:Connect(function(input)
-		if not Util.isPress(input) then
-			return
-		end
-		dragging, startInput, startPosition = true, input.Position, target.Position
-		local ended
-		ended = input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then
-				dragging = false
-				ended:Disconnect()
-			end
-		end)
-	end))
-	table.insert(connections, userInputService.InputChanged:Connect(function(input)
-		if not dragging or not Util.isMove(input) then
+	local dragging, startInput, startPosition, latest, stepper
+	local function apply()
+		if not latest then
 			return
 		end
 		-- The anchor point stays on screen (40px from the sides, 20px from top / bottom).
-		local delta = input.Position - startInput
+		local delta = latest - startInput
+		latest = nil
 		local gui = target:FindFirstAncestorWhichIsA("ScreenGui")
 		local screen = gui and gui.AbsoluteSize or BASE_VIEWPORT
 		local offsetX, offsetY = startPosition.X.Offset + delta.X, startPosition.Y.Offset + delta.Y
@@ -613,7 +604,44 @@ function Util.drag(handle, target, connections)
 		offsetX += math.clamp(x, 40, math.max(40, screen.X - 40)) - x
 		offsetY += math.clamp(y, 20, math.max(20, screen.Y - 20)) - y
 		target.Position = UDim2.new(startPosition.X.Scale, offsetX, startPosition.Y.Scale, offsetY)
+	end
+	local function stop()
+		dragging = false
+		apply()
+		if stepper then
+			stepper:Disconnect()
+			stepper = nil
+		end
+	end
+	table.insert(connections, handle.InputBegan:Connect(function(input)
+		if not Util.isPress(input) then
+			return
+		end
+		dragging, startInput, startPosition, latest = true, input.Position, target.Position, nil
+		if not stepper then
+			stepper = runService.RenderStepped:Connect(apply)
+		end
+		local ended
+		ended = input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				stop()
+				ended:Disconnect()
+			end
+		end)
 	end))
+	table.insert(connections, userInputService.InputChanged:Connect(function(input)
+		if dragging and Util.isMove(input) then
+			latest = input.Position
+		end
+	end))
+	table.insert(connections, {
+		Disconnect = function()
+			if stepper then
+				stepper:Disconnect()
+				stepper = nil
+			end
+		end,
+	})
 end
 
 function Util.safeCall(callback, ...)
@@ -1730,8 +1758,6 @@ end
 
 -- Log card (Steal Log): rarity-tinted card with the animal preview, its name, details, stats and a time chip.
 function Container:AddAssetLogItem(item)
-	item = type(item) == "table" and item or {}
-	local rarityColor = typeof(item.RarityColor) == "Color3" and item.RarityColor or Theme.CardHighlight
 	local frame = Util.new("Frame", {
 		Name = "LogItem",
 		BackgroundColor3 = Color3.new(1, 1, 1),
@@ -1742,45 +1768,56 @@ function Container:AddAssetLogItem(item)
 		Parent = self.List,
 	})
 	Util.corner(frame, 6)
-	Util.stroke(frame, rarityColor, 2.4)
-	Util.new("UIGradient", {
-		Rotation = 0,
-		Color = ColorSequence.new({
+	local frameStroke = Util.stroke(frame, Theme.CardHighlight, 2.4)
+	local gradient = Util.new("UIGradient", { Rotation = 0, Parent = frame })
+	local preview = Util.new("Frame", { Name = "Preview", BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(56, 56), Parent = frame })
+	Util.corner(preview, 6)
+	local previewStroke = Util.stroke(preview, Theme.CardHighlight, 1.6)
+	local icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ScaleType = Enum.ScaleType.Fit, Parent = preview })
+	local badge = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, 4, 1, 4), Size = UDim2.fromOffset(22, 22), ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Visible = false, Parent = preview })
+	local name = Util.text(frame, { Name = "Name", Text = "", TextSize = 16, Position = UDim2.fromOffset(80, 10), Size = UDim2.new(1, -170, 0, 22) })
+	local details = Util.text(frame, { Name = "Details", Text = "", TextSize = 11, Stroke = 1.2, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(80, 33), Size = UDim2.new(1, -170, 0, 16) })
+	local stats = Util.text(frame, { Name = "Stats", Text = "", RichText = true, TextSize = 12, Stroke = 1.2, Position = UDim2.fromOffset(80, 51), Size = UDim2.new(1, -100, 0, 18) })
+	-- A TextLabel itself (not a frame around one), so a hub restyle that clears the card's texts clears it too.
+	local chip = Util.text(frame, {
+		Name = "Chip",
+		Text = "",
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -12, 0, 12),
+		Size = UDim2.fromOffset(78, 24),
+	})
+	chip.BackgroundTransparency = 0
+	chip.BackgroundColor3 = Theme.Recess
+	Util.corner(chip, 4)
+	Util.stroke(chip, Color3.new(0, 0, 0), 1.6)
+	local element = self:_handle(frame, { Type = "LogItem" })
+	-- Repaints the same card with another entry (pooled logs reuse their oldest card instead of building a new one).
+	function element:SetItem(data)
+		data = type(data) == "table" and data or {}
+		local rarityColor = typeof(data.RarityColor) == "Color3" and data.RarityColor or Theme.CardHighlight
+		frameStroke.Color, previewStroke.Color = rarityColor, rarityColor
+		gradient.Color = ColorSequence.new({
 			ColorSequenceKeypoint.new(0, rarityColor:Lerp(Theme.Card, 0.55)),
 			ColorSequenceKeypoint.new(0.45, Theme.Card),
 			ColorSequenceKeypoint.new(1, Theme.Card),
-		}),
-		Parent = frame,
-	})
-	local preview = Util.new("Frame", { Name = "Preview", BackgroundColor3 = Theme.Recess, BorderSizePixel = 0, Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(56, 56), Parent = frame })
-	Util.corner(preview, 6)
-	Util.stroke(preview, rarityColor, 1.6)
-	local icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ScaleType = Enum.ScaleType.Fit, Parent = preview })
-	Util.icon(icon, item.Icon)
-	if item.EggIcon and item.EggIcon ~= "" then
-		local badge = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, 4, 1, 4), Size = UDim2.fromOffset(22, 22), ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Parent = preview })
-		Util.icon(badge, item.EggIcon)
-	end
-	Util.text(frame, { Name = "Name", Text = item.Name or "?", TextSize = 16, TextColor3 = rarityColor:Lerp(Color3.new(1, 1, 1), 0.25), Position = UDim2.fromOffset(80, 10), Size = UDim2.new(1, -170, 0, 22) })
-	Util.text(frame, { Name = "Details", Text = item.Details or "", TextSize = 11, Stroke = 1.2, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(80, 33), Size = UDim2.new(1, -170, 0, 16) })
-	Util.text(frame, { Name = "Stats", Text = item.Stats or "", RichText = true, TextSize = 12, Stroke = 1.2, Position = UDim2.fromOffset(80, 51), Size = UDim2.new(1, -100, 0, 18) })
-	if item.Chip then
-		-- A TextLabel itself (not a frame around one), so a hub restyle that clears the card's texts clears it too.
-		local chip = Util.text(frame, {
-			Name = "Chip",
-			Text = tostring(item.Chip),
-			TextSize = 11,
-			TextXAlignment = Enum.TextXAlignment.Center,
-			AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, -12, 0, 12),
-			Size = UDim2.fromOffset(78, 24),
 		})
-		chip.BackgroundTransparency = 0
-		chip.BackgroundColor3 = Theme.Recess
-		Util.corner(chip, 4)
-		Util.stroke(chip, Color3.new(0, 0, 0), 1.6)
+		Util.icon(icon, data.Icon)
+		local hasEgg = data.EggIcon ~= nil and data.EggIcon ~= ""
+		badge.Visible = hasEgg
+		if hasEgg then
+			Util.icon(badge, data.EggIcon)
+		end
+		name.Text = tostring(data.Name or "?")
+		name.TextColor3 = rarityColor:Lerp(Color3.new(1, 1, 1), 0.25)
+		details.Text = tostring(data.Details or "")
+		stats.Text = tostring(data.Stats or "")
+		chip.Visible = data.Chip ~= nil
+		chip.Text = tostring(data.Chip or "")
 	end
-	return self:_handle(frame, { Type = "LogItem" })
+	element:SetItem(item)
+	return element
 end
 
 
@@ -2259,7 +2296,7 @@ function Library:CreateWindow(opts)
 		Size = UDim2.new(1, -12, 1, -64),
 		CanvasSize = UDim2.new(),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollBarThickness = 3,
+		ScrollBarThickness = 0,
 		ScrollBarImageColor3 = Theme.Accent,
 		ZIndex = 3,
 		Parent = sidebar,
@@ -2402,7 +2439,7 @@ function Window:CreateTab(opts, icon)
 		Name = "TabButton",
 		Palette = Palettes.Silver,
 		Size = UDim2.new(1, -2, 1, -2),
-		Hover = 1.03,
+		Hover = 1,
 		Press = 0.96,
 		Tile = 16,
 		ZIndex = 4,
@@ -2410,6 +2447,14 @@ function Window:CreateTab(opts, icon)
 	button:SetAttribute("NoDrag", true)
 	-- Idle look: a dark card; the bevel parts only show on the selected tab.
 	local idle = Util.new("Frame", { Name = "Idle", BackgroundColor3 = Theme.Card, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), ZIndex = 8, Parent = button })
+	-- Hover lightens the idle card instead of growing the button (a grown button spilled past the tab list, which
+	-- clips it, and its black outline was cut off on the sides).
+	button.MouseEnter:Connect(function()
+		idle.BackgroundColor3 = Theme.Card:Lerp(Color3.new(1, 1, 1), 0.07)
+	end)
+	button.MouseLeave:Connect(function()
+		idle.BackgroundColor3 = Theme.Card
+	end)
 
 	local iconImage = Util.new("ImageLabel", {
 		Name = "Icon",
@@ -2622,7 +2667,8 @@ function Hud.pill(parent, text, colors, layoutOrder)
 	Util.stroke(pill, Color3.new(0, 0, 0), 2)
 	local gradient = Util.gradient(pill, colors or Hud.Grey, 90)
 	Util.new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), Parent = pill })
-	local label = Util.text(pill, { Text = text or "", TextSize = 11, Stroke = 1.8, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromScale(0, 1), TextXAlignment = Enum.TextXAlignment.Center })
+	-- A real UIStroke on pill text: the legacy text stroke looked blotchy at these sizes (pills are few, cheap enough).
+	local label = Util.text(pill, { Text = text or "", TextSize = 11, Stroke = 1.3, UIStroke = true, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromScale(0, 1), TextXAlignment = Enum.TextXAlignment.Center })
 	return pill, label, gradient
 end
 
@@ -3235,27 +3281,81 @@ function Library:CreateStealPanel(opts)
 	if toggleParts.icon then
 		toggleParts.icon.Size = UDim2.fromScale(0.56, 0.56)
 	end
+	-- The icon is kept on its own image: re-applied whenever it went blank or was swapped (a late Lucide load, a pooled
+	-- label reused elsewhere); a "$" stands in while the set is unavailable.
+	local buttonIcon = opts.ButtonIcon or "hand-coins"
+	local iconFallback = toggleParts.icon and Util.text(toggleParts.icon.Parent, {
+		Text = "$", TextSize = 30, Stroke = 2.6, TextXAlignment = Enum.TextXAlignment.Center,
+		Size = UDim2.fromScale(1, 1), ZIndex = toggleParts.icon.ZIndex,
+	})
+	if iconFallback then
+		iconFallback.Visible = false
+	end
+	local function keepIcon()
+		local icon = toggleParts.icon
+		if not icon then return end
+		local image, offset, rectSize = Util.resolveIcon(buttonIcon)
+		if image then
+			offset, rectSize = offset or Vector2.zero, rectSize or Vector2.zero
+			if icon.Image ~= image or icon.ImageRectOffset ~= offset or icon.ImageRectSize ~= rectSize then
+				icon.Image, icon.ImageRectOffset, icon.ImageRectSize = image, offset, rectSize
+			end
+			if icon.ImageTransparency ~= 0 then icon.ImageTransparency = 0 end
+		end
+		if iconFallback then
+			iconFallback.Visible = image == nil and Util.lucide == false
+		end
+	end
 	-- Alignment with the game's own button column: opts.AlignWith() returns its first visible button and the one
 	-- under it; ours takes the first one's size and sits one step (their spacing) above it, re-checked every half
 	-- second (their HUD scales with the screen). Without them it keeps its default spot and the responsive scale.
+	-- Cutscenes shrink / slide / hide the game's HUD: a reading taken then (HUD disabled or hidden, the button smaller
+	-- than the last good size or off screen) is ignored and the last good size and spot are kept; the last good size
+	-- only resets when the screen itself changes size.
 	local alignClock = 1
+	local goodSize, goodViewport
+	local function hudShown(object)
+		local node = object
+		while node and not node:IsA("LayerCollector") do
+			if node:IsA("GuiObject") and not node.Visible then return false end
+			node = node.Parent
+		end
+		return node == nil or not node:IsA("ScreenGui") or node.Enabled
+	end
 	table.insert(connections, runService.Heartbeat:Connect(function(deltaTime)
 		alignClock += deltaTime
 		if alignClock < 0.5 then
 			return
 		end
 		alignClock = 0
+		keepIcon()
 		local ok, top, below = pcall(function()
 			if type(opts.AlignWith) == "function" then
 				return opts.AlignWith()
 			end
 		end)
+		local camera = workspace.CurrentCamera
+		local viewport = camera and camera.ViewportSize or Vector2.zero
+		if viewport ~= goodViewport then
+			goodViewport, goodSize = viewport, nil
+		end
 		if not ok or typeof(top) ~= "Instance" or not top:IsA("GuiObject") or top.AbsoluteSize.X <= 0 then
-			buttonScale.Scale = Util.deviceScale()
+			if not goodSize then
+				buttonScale.Scale = Util.deviceScale()
+			end
 			return
 		end
 		local size = top.AbsoluteSize
+		local position = top.AbsolutePosition
+		local onScreen = position.X >= 0 and position.Y >= 0 and position.X + size.X <= viewport.X + 1 and position.Y + size.Y <= viewport.Y + 1
+		if not hudShown(top) or not onScreen or (goodSize and size.X < goodSize.X * 0.9) then
+			return
+		end
+		goodSize = size
 		local step = (typeof(below) == "Instance" and below:IsA("GuiObject")) and (below.AbsolutePosition.Y - top.AbsolutePosition.Y) or (size.Y * 1.35)
+		if step < size.Y * 0.9 or step > size.Y * 2.5 then
+			step = size.Y * 1.35
+		end
 		local center = top.AbsolutePosition + size / 2
 		buttonScale.Scale = 1
 		buttonHolder.Size = UDim2.fromOffset(size.X, size.Y)
