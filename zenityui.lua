@@ -2174,6 +2174,7 @@ do
 	Library.AddAccentColors({ purple.Gradient[1], purple.Gradient[2], purple.Bevel, purple.Rim, purple.Damier, purple.Dark,
 		Library.Theme.Accent, Library.Theme.Accent2 })
 end
+local themedColors = {}
 local function isPurple(color)
 	return accentKeys[colorKey(color)] == true
 end
@@ -2185,7 +2186,26 @@ function Library.ThemeColor(color)
 	end
 	local _, saturation, value = color:ToHSV()
 	local accentHue, accentSaturation = accent:ToHSV()
-	return Color3.fromHSV(accentHue, math.clamp(saturation * accentSaturation, 0, 1), value)
+	local themed = Color3.fromHSV(accentHue, math.clamp(saturation * accentSaturation, 0, 1), value)
+	themedColors[colorKey(themed)] = color
+	return themed
+end
+
+-- Back to the purple a themed colour came from. A host that repaints with the themed palette (the Steal / Status HUDs)
+-- would otherwise make the themed colour the new "original", and the next theme change would skip it.
+local function unthemeValue(value)
+	if typeof(value) == "Color3" then
+		return themedColors[colorKey(value)] or value
+	elseif typeof(value) == "ColorSequence" then
+		local points, changed = {}, false
+		for index, point in value.Keypoints do
+			local original = themedColors[colorKey(point.Value)]
+			changed = changed or original ~= nil
+			points[index] = ColorSequenceKeypoint.new(point.Time, original or point.Value)
+		end
+		return changed and ColorSequence.new(points) or value
+	end
+	return value
 end
 
 local function themeValue(value)
@@ -2215,6 +2235,15 @@ local function themeExcluded(object)
 	return false
 end
 
+-- Sidebar tab icon colour: the Icon Color (a little dimmer when not picked), else the default text / muted grey.
+function Library.TabIconColor(selected)
+	local icon = ThemeState.icon
+	if selected then
+		return icon or Library.Theme.Text
+	end
+	return icon and icon:Lerp(Library.Theme.Muted, 0.3) or Library.Theme.Muted
+end
+
 function Library.ThemeObject(object)
 	-- Nothing to do with no theme on for an object never themed; the exclusion walk only runs before a real change.
 	if not (ThemeState.accent or ThemeState.icon) and not ThemeState.originals[object] then return end
@@ -2230,11 +2259,14 @@ function Library.ThemeObject(object)
 					-- A colour the UI set itself since our last pass (a toggle turning green, a tab picked) is the new original.
 					local applied = saved["@" .. property]
 					if saved[property] == nil or (applied ~= nil and current ~= applied) then
-						saved[property] = current
+						saved[property] = unthemeValue(current)
 					end
 					local wanted = themeValue(saved[property])
-					if property == "ImageColor3" and ThemeState.icon and object:GetAttribute("ZenityIcon") then
-						wanted = ThemeState.icon
+					-- Icons keep their own colours under any accent; only the sidebar tab icons take the Icon Color.
+					if property == "ImageColor3" and object:GetAttribute("ZenityTabIcon") then
+						wanted = Library.TabIconColor(object:GetAttribute("ZenitySelected"))
+					elseif property == "ImageColor3" and object:GetAttribute("ZenityIcon") then
+						wanted = saved[property]
 					end
 					saved["@" .. property] = wanted
 					if current ~= wanted and excluded == nil then
@@ -2674,7 +2706,7 @@ function Gif.load(source)
 end
 Library.Gif = Gif
 
--- Window background image: fills the body (under the header) keeping its proportions, cropping the overflow, at
+-- Window background image: the whole image fitted in the body (under the header) at its own proportions, at
 -- `Transparency`. An asset id is shown as is; a URL is fetched once into the workspace and a GIF in it is decoded once
 -- into a sprite sheet that plays at its own pace while the window is open. Nil / "" image removes it.
 Library.BackgroundCache = {}
@@ -2708,7 +2740,7 @@ function Window:SetBackground(image, options)
 		Name = "Image",
 		BackgroundTransparency = 1,
 		Size = UDim2.fromScale(1, 1),
-		ScaleType = Enum.ScaleType.Crop,
+		ScaleType = Enum.ScaleType.Fit,
 		ImageTransparency = transparency,
 		ZIndex = 1,
 		Parent = holder,
@@ -3191,6 +3223,7 @@ function Window:CreateTab(opts, icon)
 		Parent = button,
 	})
 	Util.icon(iconImage, opts.Icon)
+	iconImage:SetAttribute("ZenityTabIcon", true)
 	local caption = Util.text(button, { Name = "Caption", Text = name, TextSize = 13, Stroke = 2, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(opts.Icon and 34 or 12, -1), Size = UDim2.new(1, opts.Icon and -40 or -18, 1, 0), ZIndex = 9 })
 	local page = Util.new("ScrollingFrame", {
 		Name = name .. "Page",
@@ -3243,13 +3276,15 @@ function Window:SelectTab(target)
 		Util.tween(previous._idle, 0.15, { BackgroundTransparency = 0 })
 		previous._caption.TextColor3 = Theme.Muted
 		-- An icon tint stays on the tabs that are not picked too (a little dimmer), instead of falling back to grey.
-		previous._icon.ImageColor3 = Library.ThemeState.icon and Library.ThemeState.icon:Lerp(Theme.Muted, 0.3) or Theme.Muted
+		previous._icon:SetAttribute("ZenitySelected", false)
+		previous._icon.ImageColor3 = Library.TabIconColor(false)
 		previous._parts.setPalette(Palettes.Silver)
 	end
 	target._parts.setPalette(Palettes.Purple)
 	Util.tween(target._idle, 0.15, { BackgroundTransparency = 1 })
 	target._caption.TextColor3 = Theme.Text
-	target._icon.ImageColor3 = Library.ThemeState.icon or Theme.Text
+	target._icon:SetAttribute("ZenitySelected", true)
+	target._icon.ImageColor3 = Library.TabIconColor(true)
 	-- New page slides up a little and fades its rows in.
 	local page = target.Page
 	page.Visible = true
