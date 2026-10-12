@@ -130,13 +130,6 @@ function Util.stroke(parent, color, thickness, transparency, mode)
 		LineJoinMode = Enum.LineJoinMode.Round,
 		Parent = parent,
 	})
-	-- Borders drawn inside the frame: an outside border was clipped wherever a card touched the edge of its list, and
-	-- two cards a few pixels apart had their borders run into one. Clients without the property keep the old look.
-	if (mode or Enum.ApplyStrokeMode.Border) == Enum.ApplyStrokeMode.Border then
-		pcall(function()
-			stroke.BorderStrokePosition = Enum.BorderStrokePosition.Inner
-		end)
-	end
 	return stroke
 end
 
@@ -1880,7 +1873,11 @@ function Container:AddStatTiles(tiles)
 	for index, tile in tiles do
 		local card = Util.card(holder, { Name = "Tile", Position = UDim2.new((index - 1) / count, 4, 0, 3), Size = UDim2.new(1 / count, -8, 1, -6) })
 		values[index] = Util.text(card, { Text = "--", TextSize = 16, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 5), Size = UDim2.new(1, 0, 0, 20), ZIndex = 2 })
-		Util.text(card, { Text = tostring(tile.Caption or ""), TextSize = 9, Stroke = 1.2, TextColor3 = (tile.Colors or Hud.Grey)[1], TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 12), ZIndex = 2 })
+		local caption = Util.text(card, { Text = tostring(tile.Caption or ""), TextSize = tile.CaptionSize or 9, Stroke = 1.2, UIStroke = tile.CaptionFont ~= nil, TextColor3 = (tile.Colors or Hud.Grey)[1], TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, (tile.CaptionSize or 9) + 3), ZIndex = 2 })
+		-- An optional caption font (e.g. a rarity's own face) for tiles that want a bolder title.
+		if typeof(tile.CaptionFont) == "Font" then
+			caption.FontFace = tile.CaptionFont
+		end
 		if tile.Icon then
 			local image = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 42), Size = UDim2.fromOffset(24, 24), ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Parent = card })
 			Util.icon(image, tile.Icon)
