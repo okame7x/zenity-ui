@@ -13,6 +13,8 @@ local httpService = game:GetService("HttpService")
 local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
+-- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
+Library.Version = "2026.10.12-2"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -3277,13 +3279,14 @@ function Library:CreateStealPanel(opts)
 		Parent = gui,
 	})
 	local buttonScale = Util.new("UIScale", { Parent = buttonHolder })
-	local toggle, toggleParts = Util.bevel(buttonHolder, { Palette = Palettes.Purple, Size = UDim2.fromScale(1, 1), StrokeThickness = 3, Icon = opts.ButtonIcon or "hand-coins", IconSize = 30, ZIndex = 3, Hover = 1.08 })
+	local toggle, toggleParts = Util.bevel(buttonHolder, { Palette = Palettes.Purple, Size = UDim2.fromScale(1, 1), StrokeThickness = 3, Icon = opts.ButtonIcon or "rbxassetid://126990543175462", IconSize = 30, ZIndex = 3, Hover = 1.08 })
 	if toggleParts.icon then
 		toggleParts.icon.Size = UDim2.fromScale(0.56, 0.56)
 	end
 	-- The icon is kept on its own image: re-applied whenever it went blank or was swapped (a late Lucide load, a pooled
 	-- label reused elsewhere); a "$" stands in while the set is unavailable.
-	local buttonIcon = opts.ButtonIcon or "hand-coins"
+	-- Lucide's hand-coins as its direct asset (no wait on the icon set download).
+	local buttonIcon = opts.ButtonIcon or "rbxassetid://126990543175462"
 	local iconFallback = toggleParts.icon and Util.text(toggleParts.icon.Parent, {
 		Text = "$", TextSize = 30, Stroke = 2.6, TextXAlignment = Enum.TextXAlignment.Center,
 		Size = UDim2.fromScale(1, 1), ZIndex = toggleParts.icon.ZIndex,
