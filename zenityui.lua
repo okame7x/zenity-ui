@@ -590,6 +590,7 @@ function Util.screen(name, order, parent)
 	table.insert(Library.Screens, gui)
 	if Library.ThemeState and (Library.ThemeState.accent or Library.ThemeState.icon) then
 		task.defer(function()
+			Util.safeCall(Library.RestoreIdentity)
 			if gui.Parent then
 				Library:ThemeGui(gui)
 			end
@@ -2215,6 +2216,7 @@ function Library:ThemeGui(gui)
 	end
 	ThemeState.screens[gui] = gui.DescendantAdded:Connect(function(object)
 		task.defer(function()
+			Util.safeCall(Library.RestoreIdentity)
 			if object.Parent and (ThemeState.accent or ThemeState.icon) then
 				Library.ThemeObject(object)
 			end
@@ -2229,7 +2231,14 @@ end
 local themeTables = { Library.Palettes.Purple, Library.Hud.Bloom, Library.Hud.Lilac, Library.Theme }
 local tableOriginals = {}
 local function themeTable(source)
-	tableOriginals[source] = tableOriginals[source] or table.clone(source)
+	-- Deep copy of the originals: the nested lists (Gradient) are themed in place, so a shallow copy lost them.
+	if not tableOriginals[source] then
+		local copy = {}
+		for key, value in source do
+			copy[key] = type(value) == "table" and table.clone(value) or value
+		end
+		tableOriginals[source] = copy
+	end
 	for key, value in tableOriginals[source] do
 		if type(value) == "table" then
 			for index, entry in value do
@@ -2241,6 +2250,37 @@ local function themeTable(source)
 	end
 end
 
+
+-- The hub keeps repainting its HUDs (Steal cards, Status pills and bars) from its own colour constants, which put the
+-- original purple back between passes. While a theme is on, every themed screen gets a light pass again every
+-- refreshSeconds, spread over frames (a time budget per frame) so it never costs a hitch.
+ThemeState.refreshSeconds, ThemeState.budget = 0.5, 0.002
+-- Library.RestoreIdentity (set by the host): called after every wait, since some executors hand a resumed thread
+-- back without the capabilities Instance writes need.
+function Library.ThemeRefreshLoop()
+	if ThemeState.looping then return end
+	ThemeState.looping = true
+	task.spawn(function()
+		while ThemeState.accent or ThemeState.icon do
+			for gui in ThemeState.screens do
+				if gui.Parent and (ThemeState.accent or ThemeState.icon) then
+					local started = os.clock()
+					for _, object in gui:GetDescendants() do
+						Library.ThemeObject(object)
+						if os.clock() - started > ThemeState.budget then
+							task.wait()
+							Util.safeCall(Library.RestoreIdentity)
+							started = os.clock()
+						end
+					end
+				end
+			end
+			task.wait(ThemeState.refreshSeconds)
+			Util.safeCall(Library.RestoreIdentity)
+		end
+		ThemeState.looping = false
+	end)
+end
 function Library:SetTheme(options)
 	options = type(options) == "table" and options or {}
 	ThemeState.accent = typeof(options.Accent) == "Color3" and options.Accent or nil
@@ -2259,6 +2299,9 @@ function Library:SetTheme(options)
 				Library.ThemeObject(object)
 			end
 		end
+	end
+	if ThemeState.accent or ThemeState.icon then
+		Library.ThemeRefreshLoop()
 	end
 end
 
@@ -2757,7 +2800,8 @@ function Window:SelectTab(target)
 		previous.Page.Visible = false
 		Util.tween(previous._idle, 0.15, { BackgroundTransparency = 0 })
 		previous._caption.TextColor3 = Theme.Muted
-		previous._icon.ImageColor3 = Theme.Muted
+		-- An icon tint stays on the tabs that are not picked too (a little dimmer), instead of falling back to grey.
+		previous._icon.ImageColor3 = Library.ThemeState.icon and Library.ThemeState.icon:Lerp(Theme.Muted, 0.3) or Theme.Muted
 		previous._parts.setPalette(Palettes.Silver)
 	end
 	target._parts.setPalette(Palettes.Purple)
