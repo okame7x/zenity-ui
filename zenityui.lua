@@ -2222,11 +2222,12 @@ local function themeValue(value)
 end
 
 -- Rarity-coloured cards (tagged ZenityNoTheme) and the hub's rarity styling keep their colours: a purple there is a
--- rarity, not the accent.
+-- rarity, not the accent. The walk stops at the ScreenGui: above it is the executor's hidden container, whose
+-- attributes throw on a protected thread and used to abort the whole theme pass.
 local function themeExcluded(object)
 	local node = object
-	for _ = 1, 10 do
-		if not node then return false end
+	for _ = 1, 12 do
+		if not node or node:IsA("LayerCollector") then return false end
 		if node:GetAttribute("ZenityNoTheme") or node:GetAttribute("GhostPepperStyle") or node:GetAttribute("GhostPepperRarityStyled") then
 			return true
 		end
@@ -2270,7 +2271,8 @@ function Library.ThemeObject(object)
 					end
 					saved["@" .. property] = wanted
 					if current ~= wanted and excluded == nil then
-						excluded = themeExcluded(object)
+						local checked, result = pcall(themeExcluded, object)
+						excluded = checked and result
 					end
 					if current ~= wanted and not excluded then
 						pcall(function() object[property] = wanted end)
@@ -2291,12 +2293,12 @@ function Library:ThemeGui(gui)
 		task.defer(function()
 			Util.safeCall(Library.RestoreIdentity)
 			if object.Parent and (ThemeState.accent or ThemeState.icon) then
-				Library.ThemeObject(object)
+				pcall(Library.ThemeObject, object)
 			end
 		end)
 	end)
 	for _, object in gui:GetDescendants() do
-		Library.ThemeObject(object)
+		pcall(Library.ThemeObject, object)
 	end
 end
 
@@ -2339,7 +2341,7 @@ function Library:SetTheme(options)
 	for gui in ThemeState.screens do
 		if gui.Parent then
 			for _, object in gui:GetDescendants() do
-				Library.ThemeObject(object)
+				pcall(Library.ThemeObject, object)
 			end
 		end
 	end
@@ -2350,7 +2352,7 @@ function Library:SetTheme(options)
 		for gui in ThemeState.screens do
 			if gui.Parent then
 				for _, object in gui:GetDescendants() do
-					Library.ThemeObject(object)
+					pcall(Library.ThemeObject, object)
 				end
 			end
 		end
