@@ -121,7 +121,7 @@ function Util.corner(parent, radius)
 end
 
 function Util.stroke(parent, color, thickness, transparency, mode)
-	return Util.new("UIStroke", {
+	local stroke = Util.new("UIStroke", {
 		Color = color or Color3.new(0, 0, 0),
 		Thickness = thickness or 2.4,
 		Transparency = transparency or 0,
@@ -130,6 +130,14 @@ function Util.stroke(parent, color, thickness, transparency, mode)
 		LineJoinMode = Enum.LineJoinMode.Round,
 		Parent = parent,
 	})
+	-- Borders drawn inside the frame: an outside border was clipped wherever a card touched the edge of its list, and
+	-- two cards a few pixels apart had their borders run into one. Clients without the property keep the old look.
+	if (mode or Enum.ApplyStrokeMode.Border) == Enum.ApplyStrokeMode.Border then
+		pcall(function()
+			stroke.BorderStrokePosition = Enum.BorderStrokePosition.Inner
+		end)
+	end
+	return stroke
 end
 
 function Util.sequence(colors)
@@ -1866,11 +1874,11 @@ function Container:AddStatTiles(tiles)
 			withIcons = true
 		end
 	end
-	local holder = Util.new("Frame", { Name = "StatTiles", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, withIcons and 74 or 52), LayoutOrder = self:_nextOrder(), Parent = self.List })
+	local holder = Util.new("Frame", { Name = "StatTiles", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, withIcons and 80 or 58), LayoutOrder = self:_nextOrder(), Parent = self.List })
 	local values = {}
 	local count = math.max(#tiles, 1)
 	for index, tile in tiles do
-		local card = Util.card(holder, { Name = "Tile", Position = UDim2.new((index - 1) / count, index == 1 and 0 or 3, 0, 0), Size = UDim2.new(1 / count, -6 + (index == 1 and 3 or 0), 1, 0) })
+		local card = Util.card(holder, { Name = "Tile", Position = UDim2.new((index - 1) / count, 4, 0, 3), Size = UDim2.new(1 / count, -8, 1, -6) })
 		values[index] = Util.text(card, { Text = "--", TextSize = 16, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 5), Size = UDim2.new(1, 0, 0, 20), ZIndex = 2 })
 		Util.text(card, { Text = tostring(tile.Caption or ""), TextSize = 9, Stroke = 1.2, TextColor3 = (tile.Colors or Hud.Grey)[1], TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 12), ZIndex = 2 })
 		if tile.Icon then
@@ -1937,7 +1945,8 @@ function Container:AddCardGrid(options)
 	local opts = type(options) == "table" and options or {}
 	local columns = opts.Columns or 2
 	local holder = Util.new("Frame", { Name = "CardGrid", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = self:_nextOrder(), Parent = self.List })
-	Util.new("UIGridLayout", { CellSize = UDim2.new(1 / columns, -5, 0, 78), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = holder })
+	Util.new("UIGridLayout", { CellSize = UDim2.new(1 / columns, -8, 0, 78), CellPadding = UDim2.fromOffset(10, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = holder })
+	Util.new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3), PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3), Parent = holder })
 	local empty = Util.text(holder, { Text = opts.EmptyText or "Nothing here", TextSize = 12, Stroke = 1.4, TextColor3 = Theme.Muted, TextXAlignment = Enum.TextXAlignment.Center, Visible = false, ZIndex = 2 })
 	empty.LayoutOrder = 0
 	local pool = {}
