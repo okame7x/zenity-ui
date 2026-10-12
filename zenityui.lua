@@ -94,7 +94,7 @@ function Util.new(className, props, children)
 		if key == "Parent" then
 			parent = value
 		else
-			object[key] = value
+			object[key] = Library.ThemeBind and Library.ThemeBind(object, key, value) or value
 		end
 	end
 	for _, child in children or {} do
@@ -607,14 +607,6 @@ function Util.screen(name, order, parent)
 		end
 	end
 	table.insert(Library.Screens, gui)
-	if Library.ThemeState and (Library.ThemeState.accent or Library.ThemeState.icon) then
-		task.defer(function()
-			Util.safeCall(Library.RestoreIdentity)
-			if gui.Parent then
-				Library:ThemeGui(gui)
-			end
-		end)
-	end
 	return gui
 end
 
@@ -2142,7 +2134,7 @@ Window.__index = Window
 -- the accent's hue and saturation while keeping its own brightness, so the light and dark shades stay shades; nil puts
 -- the original purples back. Icon: a tint for every icon image (Util.icon), nil for their own colours. Originals are
 -- remembered per instance, so the theme can change any number of times; new instances are themed as they appear.
-Library.ThemeState = { accent = nil, icon = nil, originals = setmetatable({}, { __mode = "k" }), screens = setmetatable({}, { __mode = "k" }) }
+Library.ThemeState = { accent = nil, icon = nil, objects = {}, screens = {} }
 local ThemeState = Library.ThemeState
 local THEMED = {
 	GuiObject = { "BackgroundColor3" },
@@ -2245,36 +2237,24 @@ function Library.TabIconColor(selected)
 	return icon and icon:Lerp(Library.Theme.Muted, 0.3) or Library.Theme.Muted
 end
 
-function Library.ThemeObject(object)
-	-- Nothing to do with no theme on for an object never themed; the exclusion walk only runs before a real change.
-	if not (ThemeState.accent or ThemeState.icon) and not ThemeState.originals[object] then return end
+-- Re-colours one object for the current theme: only colours that come from the accent purple (as built, or already
+-- themed) change, everything the UI painted otherwise is left alone. Runs once per theme change, never in a loop.
+local function retheme(object)
 	local excluded
-	local saved = ThemeState.originals[object]
 	for className, properties in THEMED do
 		if object:IsA(className) then
 			for _, property in properties do
+				-- Icons keep their own colours (the tab icons take the Icon Color in SetTheme).
+				local icon = property == "ImageColor3" and object:GetAttribute("ZenityIcon")
 				local ok, current = pcall(function() return object[property] end)
-				if ok then
-					saved = saved or {}
-					ThemeState.originals[object] = saved
-					-- A colour the UI set itself since our last pass (a toggle turning green, a tab picked) is the new original.
-					local applied = saved["@" .. property]
-					if saved[property] == nil or (applied ~= nil and current ~= applied) then
-						saved[property] = unthemeValue(current)
-					end
-					local wanted = themeValue(saved[property])
-					-- Icons keep their own colours under any accent; only the sidebar tab icons take the Icon Color.
-					if property == "ImageColor3" and object:GetAttribute("ZenityTabIcon") then
-						wanted = Library.TabIconColor(object:GetAttribute("ZenitySelected"))
-					elseif property == "ImageColor3" and object:GetAttribute("ZenityIcon") then
-						wanted = saved[property]
-					end
-					saved["@" .. property] = wanted
-					if current ~= wanted and excluded == nil then
-						local checked, result = pcall(themeExcluded, object)
-						excluded = checked and result
-					end
-					if current ~= wanted and not excluded then
+				if ok and not icon then
+					local wanted = themeValue(unthemeValue(current))
+					if wanted ~= current then
+						if excluded == nil then
+							local checked, result = pcall(themeExcluded, object)
+							excluded = checked and result
+						end
+						if excluded then return end
 						pcall(function() object[property] = wanted end)
 					end
 				end
@@ -2283,26 +2263,27 @@ function Library.ThemeObject(object)
 	end
 end
 
--- A screen under the theme: every descendant now, every one that appears later (themed on the next frame, once its
--- own colours are set).
+-- Util.new hands every colour it sets through here: the object is remembered for later theme changes and is born in
+-- the current theme (a purple from the palette or a literal comes out as the accent).
+local THEMED_PROPERTIES = { BackgroundColor3 = true, ImageColor3 = true, TextColor3 = true, TextStrokeColor3 = true, Color = true }
+function Library.ThemeBind(object, property, value)
+	if not THEMED_PROPERTIES[property] then return value end
+	local kind = typeof(value)
+	if kind ~= "Color3" and kind ~= "ColorSequence" then return value end
+	ThemeState.objects[object] = true
+	return ThemeState.accent and themeValue(value) or value
+end
+
+-- A host's own screen (the Anti Guard overlay, the mutation window): themed now and on every later change.
 function Library:ThemeGui(gui)
-	if typeof(gui) ~= "Instance" or ThemeState.screens[gui] then
-		return
-	end
-	ThemeState.screens[gui] = gui.DescendantAdded:Connect(function(object)
-		task.defer(function()
-			Util.safeCall(Library.RestoreIdentity)
-			if object.Parent and (ThemeState.accent or ThemeState.icon) then
-				pcall(Library.ThemeObject, object)
-			end
-		end)
-	end)
+	if typeof(gui) ~= "Instance" then return end
+	ThemeState.screens[gui] = true
 	for _, object in gui:GetDescendants() do
-		pcall(Library.ThemeObject, object)
+		pcall(retheme, object)
 	end
 end
 
--- The library's own colour tables follow too, so controls built after the change are born in the theme.
+-- Library colour tables follow too, so controls built or repainted after the change use the theme.
 local themeTables = { Library.Palettes.Purple, Library.Theme }
 local tableOriginals = {}
 local function themeTable(source)
@@ -2325,6 +2306,8 @@ local function themeTable(source)
 	end
 end
 
+-- Library.Windows: every window, so the sidebar tab icons take a new Icon Color.
+Library.Windows = {}
 
 function Library:SetTheme(options)
 	options = type(options) == "table" and options or {}
@@ -2333,31 +2316,29 @@ function Library:SetTheme(options)
 	for _, source in themeTables do
 		themeTable(source)
 	end
-	for _, gui in Library.Screens do
-		if gui.Parent then
-			Library:ThemeGui(gui)
+	for object in ThemeState.objects do
+		if object.Parent then
+			pcall(retheme, object)
+		else
+			ThemeState.objects[object] = nil
 		end
 	end
 	for gui in ThemeState.screens do
 		if gui.Parent then
 			for _, object in gui:GetDescendants() do
-				pcall(Library.ThemeObject, object)
+				pcall(retheme, object)
 			end
+		else
+			ThemeState.screens[gui] = nil
 		end
 	end
-	-- One more pass a moment later for anything a host repainted right after the change (no continuous pass: it cost
-	-- frames for as long as a theme was on).
-	task.delay(1, function()
-		Util.safeCall(Library.RestoreIdentity)
-		for gui in ThemeState.screens do
-			if gui.Parent then
-				for _, object in gui:GetDescendants() do
-					pcall(Library.ThemeObject, object)
-				end
-			end
+	for _, window in Library.Windows do
+		for _, tab in window.Tabs do
+			pcall(function() tab._icon.ImageColor3 = Library.TabIconColor(window.CurrentTab == tab) end)
 		end
-	end)
+	end
 end
+
 
 -- GIF backgrounds. Roblox cannot show a GIF, so the file is decoded here (LZW frames composited with their disposal and
 -- transparency), up to GIF_MAX_FRAMES evenly picked frames are scaled into one sprite sheet no bigger than 1024 x 1024,
@@ -2858,6 +2839,12 @@ end
 function Library:CreateWindow(opts)
 	opts = type(opts) == "table" and opts or {}
 	local self = setmetatable({ Tabs = {}, CurrentTab = nil, Visible = true, ReducedMotion = false, _connections = {}, _openFactor = 1 }, Window)
+	for index = #Library.Windows, 1, -1 do
+		if not (Library.Windows[index].Gui and Library.Windows[index].Gui.Parent) then
+			table.remove(Library.Windows, index)
+		end
+	end
+	table.insert(Library.Windows, self)
 	local connections = self._connections
 	local gui = Util.screen(opts.Name or "BloomWindow", 100, opts.Parent)
 	self.Gui = gui
