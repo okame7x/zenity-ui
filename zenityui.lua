@@ -2136,10 +2136,27 @@ local THEMED = {
 	UIGradient = { "Color" },
 }
 
--- Purple: hue 250-310 degrees with some saturation (the library's whole purple family).
+-- Only the UI's own accent purples are themed (the purple palette, the theme accents, and the hub's accent entries it
+-- registers with Library.AddAccentColors): exact colours, not "anything purple", so rarities, mutations and
+-- the purple icons and pills that carry meaning keep their colours.
+local accentKeys = {}
+local function colorKey(color)
+	return string.format("%d,%d,%d", math.round(color.R * 255), math.round(color.G * 255), math.round(color.B * 255))
+end
+function Library.AddAccentColors(colors)
+	for _, color in colors do
+		if typeof(color) == "Color3" then
+			accentKeys[colorKey(color)] = true
+		end
+	end
+end
+do
+	local purple = Library.Palettes.Purple
+	Library.AddAccentColors({ purple.Gradient[1], purple.Gradient[2], purple.Bevel, purple.Rim, purple.Damier, purple.Dark,
+		Library.Theme.Accent, Library.Theme.Accent2 })
+end
 local function isPurple(color)
-	local hue, saturation = color:ToHSV()
-	return saturation > 0.18 and hue >= 0.69 and hue <= 0.86
+	return accentKeys[colorKey(color)] == true
 end
 
 function Library.ThemeColor(color)
@@ -2228,7 +2245,7 @@ function Library:ThemeGui(gui)
 end
 
 -- The library's own colour tables follow too, so controls built after the change are born in the theme.
-local themeTables = { Library.Palettes.Purple, Library.Hud.Bloom, Library.Hud.Lilac, Library.Theme }
+local themeTables = { Library.Palettes.Purple, Library.Theme }
 local tableOriginals = {}
 local function themeTable(source)
 	-- Deep copy of the originals: the nested lists (Gradient) are themed in place, so a shallow copy lost them.
