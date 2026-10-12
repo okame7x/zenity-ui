@@ -2228,13 +2228,17 @@ local function themeExcluded(object)
 	return false
 end
 
--- Sidebar tab icon colour: the Icon Color (a little dimmer when not picked), else the default text / muted grey.
+-- Sidebar tab icon colour: white when picked, muted grey otherwise.
 function Library.TabIconColor(selected)
-	local icon = ThemeState.icon
-	if selected then
-		return icon or Library.Theme.Text
-	end
-	return icon and icon:Lerp(Library.Theme.Muted, 0.3) or Library.Theme.Muted
+	return selected and Library.Theme.Text or Library.Theme.Muted
+end
+
+-- The dragon logo images (window header, open button, notifications, Status, empty Steal list) take the Icon Color;
+-- isLogo false puts an image that stopped showing the logo back to white.
+ThemeState.logos = {}
+function Library.TintLogo(image, isLogo)
+	ThemeState.logos[image] = isLogo ~= false
+	image.ImageColor3 = isLogo ~= false and ThemeState.icon or Color3.new(1, 1, 1)
 end
 
 -- Re-colours one object for the current theme: only colours that come from the accent purple (as built, or already
@@ -2306,9 +2310,6 @@ local function themeTable(source)
 	end
 end
 
--- Library.Windows: every window, so the sidebar tab icons take a new Icon Color.
-Library.Windows = {}
-
 function Library:SetTheme(options)
 	options = type(options) == "table" and options or {}
 	ThemeState.accent = typeof(options.Accent) == "Color3" and options.Accent or nil
@@ -2332,9 +2333,11 @@ function Library:SetTheme(options)
 			ThemeState.screens[gui] = nil
 		end
 	end
-	for _, window in Library.Windows do
-		for _, tab in window.Tabs do
-			pcall(function() tab._icon.ImageColor3 = Library.TabIconColor(window.CurrentTab == tab) end)
+	for image, isLogo in ThemeState.logos do
+		if image.Parent then
+			pcall(Library.TintLogo, image, isLogo)
+		else
+			ThemeState.logos[image] = nil
 		end
 	end
 end
@@ -2839,12 +2842,6 @@ end
 function Library:CreateWindow(opts)
 	opts = type(opts) == "table" and opts or {}
 	local self = setmetatable({ Tabs = {}, CurrentTab = nil, Visible = true, ReducedMotion = false, _connections = {}, _openFactor = 1 }, Window)
-	for index = #Library.Windows, 1, -1 do
-		if not (Library.Windows[index].Gui and Library.Windows[index].Gui.Parent) then
-			table.remove(Library.Windows, index)
-		end
-	end
-	table.insert(Library.Windows, self)
 	local connections = self._connections
 	local gui = Util.screen(opts.Name or "BloomWindow", 100, opts.Parent)
 	self.Gui = gui
@@ -2931,6 +2928,7 @@ function Library:CreateWindow(opts)
 		Parent = header,
 	})
 	Util.icon(logoImage, logo)
+	Library.TintLogo(logoImage)
 	self.Logo = logoImage
 	local titleLabel = Util.text(header, {
 		Name = "Title",
@@ -3085,6 +3083,7 @@ function Library:CreateWindow(opts)
 	local openButton, openParts = Util.bevel(openHolder, { Palette = Palettes.Purple, Size = UDim2.fromScale(1, 1), StrokeThickness = 3, ZIndex = 3 })
 	local openLogo = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, -2), Size = UDim2.fromOffset(48, 48), ScaleType = Enum.ScaleType.Fit, ZIndex = 6, Parent = openButton })
 	Util.icon(openLogo, opts.OpenLogo or Assets.OpenLogo)
+	Library.TintLogo(openLogo)
 	self.OpenButton = openHolder
 	local _ = openParts
 	-- Fixed in place (not draggable): one click opens the window.
@@ -3348,6 +3347,7 @@ function Library:Notify(opts)
 	Util.new("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, 0), Size = UDim2.new(1, 0, 0, 3), Parent = strip })
 	local icon = Util.new("ImageLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(8, 4), Size = UDim2.fromOffset(22, 22), ScaleType = Enum.ScaleType.Fit, ZIndex = 3, Parent = strip })
 	Util.icon(icon, opts.Icon or Library._logo or Assets.Logo)
+	Library.TintLogo(icon, opts.Icon == nil)
 	Util.text(strip, { Text = string.upper(tostring(opts.Title or "Notice")), TextSize = 14, Position = UDim2.fromOffset(36, 0), Size = UDim2.new(1, -44, 1, 0), ZIndex = 3 })
 	Util.text(toast, {
 		Text = text,
@@ -3508,6 +3508,7 @@ function Library:CreateStatus(opts)
 	Util.new("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, Position = UDim2.fromOffset(0, 24), Size = UDim2.new(1, 0, 0, 2), ZIndex = 2, Parent = frame })
 	local logo = Util.new("ImageLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 3), Size = UDim2.fromOffset(18, 18), ScaleType = Enum.ScaleType.Fit, ZIndex = 4, Parent = strip })
 	Util.icon(logo, opts.Logo or Assets.Logo)
+	Library.TintLogo(logo)
 	Util.text(strip, { Text = string.upper(opts.Title or "Zenity Hub"), TextSize = 12, Position = UDim2.fromOffset(28, 0), Size = UDim2.new(0.3, 0, 1, 0), ZIndex = 4 })
 	local stats = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.new(0.7, -30, 0, 18), ZIndex = 4, Parent = strip })
 	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = stats })
@@ -3719,6 +3720,7 @@ function Library:CreateStatus(opts)
 		if info.Icon ~= status._icon then
 			status._icon = info.Icon
 			Util.icon(icon, info.Icon or opts.Logo or Assets.Logo)
+			Library.TintLogo(icon, info.Icon == nil)
 		end
 		status:SetModel(info.Model)
 		renderChips(info.Chips)
@@ -3994,6 +3996,7 @@ function Library:CreateStealPanel(opts)
 	local empty = Util.new("Frame", { Name = "Empty", BackgroundTransparency = 1, Position = UDim2.fromOffset(0, listTop + 40), Size = UDim2.new(1, 0, 0, 120), ZIndex = 3, Parent = frame })
 	local emptyLogo = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromOffset(72, 72), ImageTransparency = 0.55, ScaleType = Enum.ScaleType.Fit, ZIndex = 3, Parent = empty })
 	Util.icon(emptyLogo, Library._logo or Assets.OpenLogo)
+	Library.TintLogo(emptyLogo)
 	Util.text(empty, { Text = opts.EmptyText or "Nothing here", TextSize = 14, Stroke = 2, TextColor3 = Theme.Muted, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 80), Size = UDim2.new(1, 0, 0, 24), ZIndex = 3 })
 	-- Egg count pill on the header's right.
 	local countPill, countText = Hud.pill(header, "0 EGGS", Hud.Gold, 0)
