@@ -453,11 +453,13 @@ end
 
 -- A PNG from a URL or the workspace as a content id (writefile + getcustomasset), cached under ZenityUI/.
 Util.imageCache = {}
+-- Pixel sizes of downloaded PNGs (from their IHDR), by content id: the window background tiles at the image's aspect.
+Util.imageSizes = {}
 function Util.customImage(source)
 	if Util.imageCache[source] then
 		return Util.imageCache[source]
 	end
-	local ok, asset = pcall(function()
+	local ok, asset, path = pcall(function()
 		local path = source
 		if source:find("^https?://") then
 			path = "ZenityUI/" .. httpService:GenerateGUID(false):sub(1, 8) .. ".png"
@@ -479,9 +481,19 @@ function Util.customImage(source)
 				writefile(path, body)
 			end
 		end
-		return getcustomasset(path)
+		return getcustomasset(path), path
 	end)
 	Util.imageCache[source] = ok and asset or nil
+	-- A PNG's size from its IHDR (bytes 17-24), for the background's tile aspect.
+	if ok and asset and path then
+		pcall(function()
+			local head = readfile(path):sub(1, 24)
+			if head:sub(2, 4) == "PNG" then
+				local function u32(at) local a, b, c, d = head:byte(at, at + 3) return ((a * 256 + b) * 256 + c) * 256 + d end
+				Util.imageSizes[asset] = Vector2.new(u32(17), u32(21))
+			end
+		end)
+	end
 	return Util.imageCache[source]
 end
 
@@ -2197,7 +2209,9 @@ local function themeExcluded(object)
 end
 
 function Library.ThemeObject(object)
-	if themeExcluded(object) then return end
+	-- Nothing to do with no theme on for an object never themed; the exclusion walk only runs before a real change.
+	if not (ThemeState.accent or ThemeState.icon) and not ThemeState.originals[object] then return end
+	local excluded
 	local saved = ThemeState.originals[object]
 	for className, properties in THEMED do
 		if object:IsA(className) then
@@ -2216,7 +2230,10 @@ function Library.ThemeObject(object)
 						wanted = ThemeState.icon
 					end
 					saved["@" .. property] = wanted
-					if current ~= wanted then
+					if current ~= wanted and excluded == nil then
+						excluded = themeExcluded(object)
+					end
+					if current ~= wanted and not excluded then
 						pcall(function() object[property] = wanted end)
 					end
 				end
@@ -2268,36 +2285,6 @@ local function themeTable(source)
 end
 
 
--- The hub keeps repainting its HUDs (Steal cards, Status pills and bars) from its own colour constants, which put the
--- original purple back between passes. While a theme is on, every themed screen gets a light pass again every
--- refreshSeconds, spread over frames (a time budget per frame) so it never costs a hitch.
-ThemeState.refreshSeconds, ThemeState.budget = 0.5, 0.002
--- Library.RestoreIdentity (set by the host): called after every wait, since some executors hand a resumed thread
--- back without the capabilities Instance writes need.
-function Library.ThemeRefreshLoop()
-	if ThemeState.looping then return end
-	ThemeState.looping = true
-	task.spawn(function()
-		while ThemeState.accent or ThemeState.icon do
-			for gui in ThemeState.screens do
-				if gui.Parent and (ThemeState.accent or ThemeState.icon) then
-					local started = os.clock()
-					for _, object in gui:GetDescendants() do
-						Library.ThemeObject(object)
-						if os.clock() - started > ThemeState.budget then
-							task.wait()
-							Util.safeCall(Library.RestoreIdentity)
-							started = os.clock()
-						end
-					end
-				end
-			end
-			task.wait(ThemeState.refreshSeconds)
-			Util.safeCall(Library.RestoreIdentity)
-		end
-		ThemeState.looping = false
-	end)
-end
 function Library:SetTheme(options)
 	options = type(options) == "table" and options or {}
 	ThemeState.accent = typeof(options.Accent) == "Color3" and options.Accent or nil
@@ -2317,9 +2304,18 @@ function Library:SetTheme(options)
 			end
 		end
 	end
-	if ThemeState.accent or ThemeState.icon then
-		Library.ThemeRefreshLoop()
-	end
+	-- One more pass a moment later for anything a host repainted right after the change (no continuous pass: it cost
+	-- frames for as long as a theme was on).
+	task.delay(1, function()
+		Util.safeCall(Library.RestoreIdentity)
+		for gui in ThemeState.screens do
+			if gui.Parent then
+				for _, object in gui:GetDescendants() do
+					Library.ThemeObject(object)
+				end
+			end
+		end
+	end)
 end
 
 -- GIF backgrounds. Roblox cannot show a GIF, so the file is decoded here (LZW frames composited with their disposal and
@@ -2672,14 +2668,25 @@ end
 Library.Gif = Gif
 
 -- Window background image: behind everything inside the window (rounded like it), any icon source (asset id, http
--- URL or workspace file), at `Transparency`, animated by `Animation`: "None", "Scroll" (tiled, drifting diagonally),
--- "Pulse" (fading in and out), "Zoom" (slowly breathing in) or "Rotate" (slowly turning, oversized). `Speed` scales
--- the motion. Nil / "" image removes it. The motion stops with ReducedMotion or while the window is hidden.
+-- URL, workspace file, or a GIF, decoded once into a sprite sheet), at `Transparency`, animated by `Animation`:
+-- "None", "Scroll" (tiled, drifting diagonally), "Pulse" (fading in and out), "Zoom" (slowly breathing in) or
+-- "Rotate" (slowly turning, oversized). `Speed` scales the motion. Nil / "" image removes it. The image keeps its own
+-- proportions: it covers the window and crops the overflow, tiles are sized to its aspect. A new transparency or speed
+-- only updates the running background, and a source is never downloaded twice (Library.BackgroundCache).
+Library.BackgroundCache = {}
 function Window:SetBackground(image, options)
 	options = type(options) == "table" and options or {}
-	if self._background then
-		self._background.connection:Disconnect()
-		self._background.holder:Destroy()
+	local animation = options.Animation or "None"
+	local current = self._background
+	if current and current.image == image and current.animation == animation then
+		current.transparency = math.clamp(tonumber(options.Transparency) or 0.6, 0, 1)
+		current.speed = math.max(tonumber(options.Speed) or 1, 0)
+		current.label.ImageTransparency = current.transparency
+		return
+	end
+	if current then
+		current.connection:Disconnect()
+		current.holder:Destroy()
 		self._background = nil
 	end
 	if image == nil or image == "" then
@@ -2687,47 +2694,74 @@ function Window:SetBackground(image, options)
 	end
 	local holder = Util.new("Frame", { Name = "ThemeBackground", BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = self.Main })
 	Util.corner(holder, 6)
-	local animation = options.Animation or "None"
-	local tile = 180
 	local label = Util.new("ImageLabel", {
 		Name = "Image",
 		BackgroundTransparency = 1,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = animation == "Rotate" and UDim2.fromScale(1.8, 1.8) or animation == "Scroll" and UDim2.new(1, tile, 1, tile) or UDim2.fromScale(1, 1),
-		ScaleType = animation == "Scroll" and Enum.ScaleType.Tile or Enum.ScaleType.Crop,
-		TileSize = UDim2.fromOffset(tile, tile),
+		Size = animation == "Rotate" and UDim2.fromScale(1.8, 1.8) or UDim2.fromScale(1, 1),
+		ScaleType = Enum.ScaleType.Crop,
 		ImageTransparency = math.clamp(tonumber(options.Transparency) or 0.6, 0, 1),
 		ZIndex = 1,
 		Parent = holder,
 	})
 	local scale = Util.new("UIScale", { Parent = label })
-	-- A GIF is decoded into a sprite sheet in the background (first time only) and played frame by frame; anything
-	-- else goes through Util.icon (asset id, image URL, workspace file).
-	local gif
-	local gifData, gifKey = Gif.load(image)
-	if gifData then
-		task.spawn(function()
-			local ok, layout = pcall(Gif.sheet, gifData, gifKey)
-			Util.safeCall(Library.RestoreIdentity)
-			if ok and type(layout) == "table" and label.Parent then
-				label.Image = layout.asset
-				label.ImageRectSize = Vector2.new(layout.cellWidth, layout.cellHeight)
-				label.ImageRectOffset = Vector2.zero
-				gif = layout
-			elseif not ok then
-				warn("[Zenity UI] GIF background: " .. tostring(layout))
-			end
-		end)
-	else
-		Util.icon(label, image)
+	local state = {
+		image = image, animation = animation, holder = holder, label = label,
+		transparency = label.ImageTransparency, speed = math.max(tonumber(options.Speed) or 1, 0),
+	}
+	self._background = state
+	-- Scroll tiles at the image's own aspect (known for GIF sheets and downloaded PNGs; square otherwise).
+	local function useTiles(aspect)
+		if animation ~= "Scroll" then return end
+		local tileWidth = 200
+		local tileHeight = math.max(20, math.floor(tileWidth / math.max(aspect or 1, 0.05)))
+		state.tile = Vector2.new(tileWidth, tileHeight)
+		label.ScaleType = Enum.ScaleType.Tile
+		label.TileSize = UDim2.fromOffset(tileWidth, tileHeight)
+		label.Size = UDim2.new(1, tileWidth, 1, tileHeight)
 	end
-	local base = label.ImageTransparency
-	local speed = math.max(tonumber(options.Speed) or 1, 0)
+	local cache = Library.BackgroundCache[image]
+	local function show(entry)
+		if not label.Parent or self._background ~= state then return end
+		if entry.gif then
+			local gif = entry.gif
+			label.Image = gif.asset
+			label.ImageRectSize = Vector2.new(gif.cellWidth, gif.cellHeight)
+			label.ImageRectOffset = Vector2.zero
+			state.gif = gif
+			useTiles(gif.cellWidth / gif.cellHeight)
+		else
+			Util.icon(label, image)
+			local size = Util.imageSizes[label.Image]
+			useTiles(size and size.X / size.Y or 1)
+		end
+	end
+	if cache then
+		show(cache)
+	else
+		-- First time for this source: the GIF check (and decode) off the calling thread, then cached.
+		task.spawn(function()
+			local entry = {}
+			local gifData, gifKey = Gif.load(image)
+			if gifData then
+				local ok, layout = pcall(Gif.sheet, gifData, gifKey)
+				if ok and type(layout) == "table" then
+					entry.gif = layout
+				else
+					warn("[Zenity UI] GIF background: " .. tostring(layout))
+				end
+			end
+			Util.safeCall(Library.RestoreIdentity)
+			Library.BackgroundCache[image] = entry
+			show(entry)
+		end)
+	end
 	local clock, gifClock = 0, 0
-	local connection = runService.RenderStepped:Connect(function(deltaTime)
+	state.connection = runService.RenderStepped:Connect(function(deltaTime)
 		-- GIF frames play at the GIF's own pace, whatever the motion style.
-		if gif and label.Parent then
+		local gif = state.gif
+		if gif and self.Visible then
 			gifClock += deltaTime
 			local frame = math.floor(gifClock * gif.fps) % gif.frames
 			label.ImageRectOffset = Vector2.new((frame % gif.columns) * gif.cellWidth, math.floor(frame / gif.columns) * gif.cellHeight)
@@ -2735,20 +2769,19 @@ function Window:SetBackground(image, options)
 		if animation == "None" or Library.ReducedMotion or self.ReducedMotion or not self.Visible then
 			return
 		end
-		clock += deltaTime * speed
+		clock += deltaTime * state.speed
 		if animation == "Scroll" then
-			local offset = (clock * 24) % tile
-			label.Position = UDim2.new(0.5, -offset, 0.5, -offset)
+			local tile = state.tile or Vector2.new(200, 200)
+			label.Position = UDim2.new(0.5, -((clock * 24) % tile.X), 0.5, -((clock * 24) % tile.Y))
 		elseif animation == "Pulse" then
-			label.ImageTransparency = base + (1 - base) * (0.5 - math.cos(clock * 1.5) * 0.5) * 0.6
+			label.ImageTransparency = state.transparency + (1 - state.transparency) * (0.5 - math.cos(clock * 1.5) * 0.5) * 0.6
 		elseif animation == "Zoom" then
 			scale.Scale = 1.06 + math.sin(clock * 0.6) * 0.06
 		elseif animation == "Rotate" then
 			label.Rotation = (clock * 6) % 360
 		end
 	end)
-	self._background = { holder = holder, label = label, connection = connection }
-	table.insert(self._connections, connection)
+	table.insert(self._connections, state.connection)
 end
 
 
