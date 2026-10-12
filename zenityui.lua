@@ -111,6 +111,10 @@ function Util.tween(object, time, props, style, direction)
 		info = TweenInfo.new(time, style or Enum.EasingStyle.Quad, direction or Enum.EasingDirection.Out)
 		Util.tweenInfos[key] = info
 	end
+	if props.BackgroundTransparency and Library.Surfaces and Library.Surfaces[object] then
+		props = table.clone(props)
+		props.BackgroundTransparency = Library.SurfaceValue(object, props.BackgroundTransparency)
+	end
 	local tween = tweenService:Create(object, info, props)
 	tween:Play()
 	return tween
@@ -453,6 +457,8 @@ end
 
 -- A PNG from a URL or the workspace as a content id (writefile + getcustomasset), cached under ZenityUI/.
 Util.imageCache = {}
+-- Workspace file each downloaded source was saved to (the background reads a GIF back from it).
+Util.imageFiles = {}
 -- Pixel sizes of downloaded PNGs (from their IHDR), by content id: the window background tiles at the image's aspect.
 Util.imageSizes = {}
 function Util.customImage(source)
@@ -484,6 +490,7 @@ function Util.customImage(source)
 		return getcustomasset(path), path
 	end)
 	Util.imageCache[source] = ok and asset or nil
+	Util.imageFiles[source] = ok and path or nil
 	-- A PNG's size from its IHDR (bytes 17-24), for the background's tile aspect.
 	if ok and asset and path then
 		pcall(function()
@@ -2667,121 +2674,132 @@ function Gif.load(source)
 end
 Library.Gif = Gif
 
--- Window background image: behind everything inside the window (rounded like it), any icon source (asset id, http
--- URL, workspace file, or a GIF, decoded once into a sprite sheet), at `Transparency`, animated by `Animation`:
--- "None", "Scroll" (tiled, drifting diagonally), "Pulse" (fading in and out), "Zoom" (slowly breathing in) or
--- "Rotate" (slowly turning, oversized). `Speed` scales the motion. Nil / "" image removes it. The image keeps its own
--- proportions: it covers the window and crops the overflow, tiles are sized to its aspect. A new transparency or speed
--- only updates the running background, and a source is never downloaded twice (Library.BackgroundCache).
+-- Window background image: fills the body (under the header) keeping its proportions, cropping the overflow, at
+-- `Transparency`. An asset id is shown as is; a URL is fetched once into the workspace and a GIF in it is decoded once
+-- into a sprite sheet that plays at its own pace while the window is open. Nil / "" image removes it.
 Library.BackgroundCache = {}
 function Window:SetBackground(image, options)
 	options = type(options) == "table" and options or {}
-	local animation = options.Animation or "None"
+	local transparency = math.clamp(tonumber(options.Transparency) or 0.6, 0, 1)
 	local current = self._background
-	if current and current.image == image and current.animation == animation then
-		current.transparency = math.clamp(tonumber(options.Transparency) or 0.6, 0, 1)
-		current.speed = math.max(tonumber(options.Speed) or 1, 0)
-		current.label.ImageTransparency = current.transparency
+	if current and current.image == image then
+		current.label.ImageTransparency = transparency
 		return
 	end
 	if current then
-		current.connection:Disconnect()
+		if current.connection then current.connection:Disconnect() end
 		current.holder:Destroy()
 		self._background = nil
 	end
 	if image == nil or image == "" then
 		return
 	end
-	local holder = Util.new("Frame", { Name = "ThemeBackground", BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = self.Main })
+	local holder = Util.new("Frame", {
+		Name = "ThemeBackground",
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Position = UDim2.fromOffset(0, HEADER_HEIGHT + 6),
+		Size = UDim2.new(1, 0, 1, -HEADER_HEIGHT - 6),
+		ZIndex = 1,
+		Parent = self.Main,
+	})
 	Util.corner(holder, 6)
 	local label = Util.new("ImageLabel", {
 		Name = "Image",
 		BackgroundTransparency = 1,
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = animation == "Rotate" and UDim2.fromScale(1.8, 1.8) or UDim2.fromScale(1, 1),
+		Size = UDim2.fromScale(1, 1),
 		ScaleType = Enum.ScaleType.Crop,
-		ImageTransparency = math.clamp(tonumber(options.Transparency) or 0.6, 0, 1),
+		ImageTransparency = transparency,
 		ZIndex = 1,
 		Parent = holder,
 	})
-	local scale = Util.new("UIScale", { Parent = label })
-	local state = {
-		image = image, animation = animation, holder = holder, label = label,
-		transparency = label.ImageTransparency, speed = math.max(tonumber(options.Speed) or 1, 0),
-	}
+	local state = { image = image, holder = holder, label = label }
 	self._background = state
-	-- Scroll tiles at the image's own aspect (known for GIF sheets and downloaded PNGs; square otherwise).
-	local function useTiles(aspect)
-		if animation ~= "Scroll" then return end
-		local tileWidth = 200
-		local tileHeight = math.max(20, math.floor(tileWidth / math.max(aspect or 1, 0.05)))
-		state.tile = Vector2.new(tileWidth, tileHeight)
-		label.ScaleType = Enum.ScaleType.Tile
-		label.TileSize = UDim2.fromOffset(tileWidth, tileHeight)
-		label.Size = UDim2.new(1, tileWidth, 1, tileHeight)
-	end
-	local cache = Library.BackgroundCache[image]
 	local function show(entry)
 		if not label.Parent or self._background ~= state then return end
+		label.Image = entry.asset or ""
 		if entry.gif then
-			local gif = entry.gif
-			label.Image = gif.asset
-			label.ImageRectSize = Vector2.new(gif.cellWidth, gif.cellHeight)
+			label.ImageRectSize = Vector2.new(entry.gif.cellWidth, entry.gif.cellHeight)
 			label.ImageRectOffset = Vector2.zero
-			state.gif = gif
-			useTiles(gif.cellWidth / gif.cellHeight)
-		else
-			Util.icon(label, image)
-			local size = Util.imageSizes[label.Image]
-			useTiles(size and size.X / size.Y or 1)
+			local gif, clock = entry.gif, 0
+			state.connection = runService.RenderStepped:Connect(function(deltaTime)
+				if not self.Visible then return end
+				clock += deltaTime
+				local frame = math.floor(clock * gif.fps) % gif.frames
+				label.ImageRectOffset = Vector2.new((frame % gif.columns) * gif.cellWidth, math.floor(frame / gif.columns) * gif.cellHeight)
+			end)
+			table.insert(self._connections, state.connection)
 		end
 	end
+	local cache = Library.BackgroundCache[image]
 	if cache then
-		show(cache)
-	else
-		-- First time for this source: the GIF check (and decode) off the calling thread, then cached.
-		task.spawn(function()
-			local entry = {}
-			local gifData, gifKey = Gif.load(image)
-			if gifData then
-				local ok, layout = pcall(Gif.sheet, gifData, gifKey)
-				if ok and type(layout) == "table" then
-					entry.gif = layout
-				else
-					warn("[Zenity UI] GIF background: " .. tostring(layout))
-				end
-			end
-			Util.safeCall(Library.RestoreIdentity)
-			Library.BackgroundCache[image] = entry
-			show(entry)
-		end)
+		return show(cache)
 	end
-	local clock, gifClock = 0, 0
-	state.connection = runService.RenderStepped:Connect(function(deltaTime)
-		-- GIF frames play at the GIF's own pace, whatever the motion style.
-		local gif = state.gif
-		if gif and self.Visible then
-			gifClock += deltaTime
-			local frame = math.floor(gifClock * gif.fps) % gif.frames
-			label.ImageRectOffset = Vector2.new((frame % gif.columns) * gif.cellWidth, math.floor(frame / gif.columns) * gif.cellHeight)
+	if not image:lower():find("^https?://") and not image:lower():find("%.gif$") then
+		cache = { asset = image:match("^%d+$") and "rbxassetid://" .. image or image }
+		Library.BackgroundCache[image] = cache
+		return show(cache)
+	end
+	-- One download (Util.customImage keeps the file); a GIF in it becomes a sprite sheet, off the calling thread.
+	task.spawn(function()
+		local entry = { asset = Util.customImage(image) }
+		local ok, data = pcall(readfile, Util.imageFiles[image] or image)
+		if ok and type(data) == "string" and data:sub(1, 3) == "GIF" then
+			local hash = 5381
+			for index = 1, #image do
+				hash = (hash * 33 + string.byte(image, index)) % 4294967296
+			end
+			local built, layout = pcall(Gif.sheet, data, string.format("%08x", hash))
+			if built and type(layout) == "table" then
+				entry.gif, entry.asset = layout, layout.asset
+			else
+				warn("[Zenity UI] GIF background: " .. tostring(layout))
+			end
 		end
-		if animation == "None" or Library.ReducedMotion or self.ReducedMotion or not self.Visible then
-			return
-		end
-		clock += deltaTime * state.speed
-		if animation == "Scroll" then
-			local tile = state.tile or Vector2.new(200, 200)
-			label.Position = UDim2.new(0.5, -((clock * 24) % tile.X), 0.5, -((clock * 24) % tile.Y))
-		elseif animation == "Pulse" then
-			label.ImageTransparency = state.transparency + (1 - state.transparency) * (0.5 - math.cos(clock * 1.5) * 0.5) * 0.6
-		elseif animation == "Zoom" then
-			scale.Scale = 1.06 + math.sin(clock * 0.6) * 0.06
-		elseif animation == "Rotate" then
-			label.Rotation = (clock * 6) % 360
-		end
+		Util.safeCall(Library.RestoreIdentity)
+		Library.BackgroundCache[image] = entry
+		show(entry)
 	end)
-	table.insert(self._connections, state.connection)
+end
+
+-- See-through tabs, cards and toggles (0 = solid, 1 = invisible), so the background image shows behind them. Every
+-- surface keeps its own transparency as the base; small parts (knobs, checks, icons) stay solid. Library.SurfaceTweens
+-- remaps the UI's own hover / select tweens to the same scale.
+Library.Surfaces = setmetatable({}, { __mode = "k" })
+function Library.SurfaceValue(object, value)
+	local surface = Library.Surfaces[object]
+	if not surface then return value end
+	surface.base = value
+	return value + (1 - value) * surface.window._surfaceAlpha
+end
+
+function Window:SetElementTransparency(alpha)
+	alpha = math.clamp(tonumber(alpha) or 0, 0, 1)
+	self._surfaceAlpha = alpha
+	local function apply(object)
+		if not object:IsA("GuiObject") or object:IsA("TextLabel") or object:IsA("ImageLabel") then return end
+		if object:FindFirstAncestor("ThemeBackground") then return end
+		local surface = Library.Surfaces[object]
+		if not surface then
+			local size = object.AbsoluteSize
+			if size.X < 40 and size.Y < 40 then return end
+			surface = { window = self, base = object.BackgroundTransparency }
+			Library.Surfaces[object] = surface
+		end
+		object.BackgroundTransparency = surface.base + (1 - surface.base) * alpha
+	end
+	for _, object in self.Body:GetDescendants() do
+		apply(object)
+	end
+	if not self._surfaceWatch then
+		self._surfaceWatch = self.Body.DescendantAdded:Connect(function(object)
+			if self._surfaceAlpha <= 0 then return end
+			task.defer(function()
+				if object.Parent then apply(object) end
+			end)
+		end)
+		table.insert(self._connections, self._surfaceWatch)
+	end
 end
 
 
