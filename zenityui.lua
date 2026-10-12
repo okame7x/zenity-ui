@@ -116,21 +116,29 @@ function Util.tween(object, time, props, style, direction)
 	return tween
 end
 
+-- Outlines join round only on rounded frames: a Round join on a square frame (the toggle switch, square bevels) rounds
+-- the outline's corners while the fill stays square, so the fill's corners stuck out past the black border. A corner
+-- added after the outline switches it to Round then.
 function Util.corner(parent, radius)
-	return Util.new("UICorner", { CornerRadius = UDim.new(0, radius or 4), Parent = parent })
+	local corner = Util.new("UICorner", { CornerRadius = UDim.new(0, radius or 4), Parent = parent })
+	for _, child in parent:GetChildren() do
+		if child:IsA("UIStroke") and child.ApplyStrokeMode == Enum.ApplyStrokeMode.Border then
+			child.LineJoinMode = Enum.LineJoinMode.Round
+		end
+	end
+	return corner
 end
 
 function Util.stroke(parent, color, thickness, transparency, mode)
-	local stroke = Util.new("UIStroke", {
+	local rounded = parent:FindFirstChildOfClass("UICorner") ~= nil
+	return Util.new("UIStroke", {
 		Color = color or Color3.new(0, 0, 0),
 		Thickness = thickness or 2.4,
 		Transparency = transparency or 0,
 		ApplyStrokeMode = mode or Enum.ApplyStrokeMode.Border,
-		-- Round joins: a Miter join on a rounded (UICorner) frame leaves spikes and gaps at the corners.
-		LineJoinMode = Enum.LineJoinMode.Round,
+		LineJoinMode = rounded and Enum.LineJoinMode.Round or Enum.LineJoinMode.Miter,
 		Parent = parent,
 	})
-	return stroke
 end
 
 function Util.sequence(colors)
@@ -1868,22 +1876,30 @@ function Container:AddStatTiles(tiles)
 		end
 	end
 	local holder = Util.new("Frame", { Name = "StatTiles", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, withIcons and 80 or 58), LayoutOrder = self:_nextOrder(), Parent = self.List })
-	local values = {}
+	local values, captions, icons = {}, {}, {}
 	local count = math.max(#tiles, 1)
 	for index, tile in tiles do
 		local card = Util.card(holder, { Name = "Tile", Position = UDim2.new((index - 1) / count, 4, 0, 3), Size = UDim2.new(1 / count, -8, 1, -6) })
 		values[index] = Util.text(card, { Text = "--", TextSize = 16, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 5), Size = UDim2.new(1, 0, 0, 20), ZIndex = 2 })
 		local caption = Util.text(card, { Text = tostring(tile.Caption or ""), TextSize = tile.CaptionSize or 9, Stroke = 1.2, UIStroke = tile.CaptionFont ~= nil, TextColor3 = (tile.Colors or Hud.Grey)[1], TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, (tile.CaptionSize or 9) + 3), ZIndex = 2 })
+		captions[index] = caption
 		-- An optional caption font (e.g. a rarity's own face) for tiles that want a bolder title.
 		if typeof(tile.CaptionFont) == "Font" then
 			caption.FontFace = tile.CaptionFont
 		end
 		if tile.Icon then
 			local image = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 42), Size = UDim2.fromOffset(24, 24), ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Parent = card })
+			icons[index] = image
 			Util.icon(image, tile.Icon)
 		end
 	end
-	local element = { Type = "StatTiles" }
+	-- Captions: the title labels (a host may restyle them, e.g. a rarity gradient); SetIcon(index, icon) swaps a tile's icon.
+	local element = { Type = "StatTiles", Captions = captions }
+	function element:SetIcon(index, icon)
+		if icons[index] then
+			Util.icon(icons[index], icon)
+		end
+	end
 	function element:SetValue(index, text)
 		if values[index] then
 			values[index].Text = tostring(text)
