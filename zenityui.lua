@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.15-3"
+Library.Version = "2026.10.15-4"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -76,6 +76,7 @@ Library.Assets = {
 -- Constants.
 local LUCIDE_URL = "https://raw.githubusercontent.com/Footagesus/Icons/refs/heads/main/lucide/dist/Icons.lua"
 local FONT = Enum.Font.GothamBlack
+local BODY_FONT = Enum.Font.GothamBold
 local HEADER_HEIGHT = 60
 local SIDEBAR_WIDTH = 154
 local ROW_HEIGHT = 46
@@ -162,7 +163,7 @@ function Util.text(parent, props)
 	local label = Util.new("TextLabel", {
 		Name = props.Name or "Label",
 		BackgroundTransparency = 1,
-		Font = FONT,
+		Font = props.Font or (size < 18 and BODY_FONT or FONT),
 		Text = props.Text or "",
 		TextSize = size,
 		TextColor3 = props.TextColor3 or Theme.Text,
@@ -193,7 +194,7 @@ function Util.text(parent, props)
 			})
 		else
 			label.TextStrokeColor3 = props.StrokeColor or Theme.Ink
-			label.TextStrokeTransparency = thickness >= 1.6 and 0 or 0.35
+			label.TextStrokeTransparency = thickness >= 1.6 and 0.45 or 0.65
 		end
 	end
 	return label
@@ -1066,7 +1067,7 @@ function Container:AddSlider(idOrOptions, options)
 	Util.stroke(chip, Theme.RecessBorder, 1.2)
 	local valueBox = Util.new("TextBox", {
 		BackgroundTransparency = 1,
-		Font = FONT,
+		Font = BODY_FONT,
 		TextSize = 14,
 		TextColor3 = Theme.Text,
 		ClearTextOnFocus = false,
@@ -1239,7 +1240,7 @@ function Container:AddDropdown(idOrOptions, options)
 		Name = "Search",
 		BackgroundColor3 = Theme.Card,
 		BorderSizePixel = 0,
-		Font = FONT,
+		Font = BODY_FONT,
 		PlaceholderText = "Search...",
 		PlaceholderColor3 = Color3.fromRGB(120, 150, 165),
 		Text = "",
@@ -1513,7 +1514,7 @@ function Container:AddInput(idOrOptions, options)
 		Size = UDim2.new(0.48, 0, 0, 30),
 		BackgroundColor3 = Theme.Recess,
 		BorderSizePixel = 0,
-		Font = FONT,
+		Font = BODY_FONT,
 		Text = tostring(opts.Default or ""),
 		PlaceholderText = opts.Placeholder or "",
 		PlaceholderColor3 = Color3.fromRGB(120, 150, 165),
@@ -1717,7 +1718,7 @@ function Container:AddAssetFilter(options)
 		Name = "Search",
 		BackgroundColor3 = Theme.Recess,
 		BorderSizePixel = 0,
-		Font = FONT,
+		Font = BODY_FONT,
 		PlaceholderText = opts.Placeholder or "Search...",
 		PlaceholderColor3 = Color3.fromRGB(120, 150, 165),
 		Text = "",
