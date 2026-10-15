@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.12-2"
+Library.Version = "2026.10.15-1"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -3062,7 +3062,7 @@ function Library:CreateWindow(opts)
 	local openHolder = Util.new("Frame", {
 		Name = "OpenButton",
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = opts.OpenPosition or UDim2.new(0, 64, 0.5, -150),
+		Position = opts.OpenPosition or UDim2.fromScale(64 / BASE_VIEWPORT.X, 0.5 - 150 / BASE_VIEWPORT.Y),
 		Size = UDim2.fromOffset(64, 64),
 		BackgroundTransparency = 1,
 		Visible = false,
@@ -3938,8 +3938,9 @@ function Library:CreateStealPanel(opts)
 	panel.Gui = gui
 	local right = opts.Side ~= "Left"
 	local width, height = opts.Width or 350, opts.Height or 460
-	-- Opens left of the screen-edge button column (the game's right-side buttons and ours), never over it.
-	local openPosition = UDim2.new(right and 1 or 0, right and -(opts.EdgeGap or 112) or (opts.EdgeGap or 112), 0.5, 0)
+	-- Preserve the reference layout as screen percentages at every resolution.
+	local edgeGap = (opts.EdgeGap or 112) / BASE_VIEWPORT.X
+	local openPosition = UDim2.fromScale(right and (1 - edgeGap) or edgeGap, 0.5)
 	local holder = Util.new("Frame", { AnchorPoint = Vector2.new(right and 1 or 0, 0.5), Position = openPosition, Size = UDim2.fromOffset(width, height), BackgroundTransparency = 1, Parent = gui })
 	panel.Holder = holder
 	Util.responsive(Util.new("UIScale", { Parent = holder }), connections)
@@ -4020,16 +4021,16 @@ function Library:CreateStealPanel(opts)
 	end))
 
 	-- Toggle button in the game's own button style (a purple 3D square with an icon and a count badge), fixed in the
-	-- game's right-side button column, one step above its first button. It slides the panel off screen and back.
+	-- same relative screen position at every resolution. It slides the panel off screen and back.
 	local buttonHolder = Util.new("Frame", {
 		Name = "StealButton",
 		BackgroundTransparency = 1,
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = opts.ButtonPosition or UDim2.new(right and 1 or 0, right and -54 or 54, 0.5, -220),
+		Position = opts.ButtonPosition or UDim2.fromScale(right and (1 - 54 / BASE_VIEWPORT.X) or (54 / BASE_VIEWPORT.X), 0.5 - 220 / BASE_VIEWPORT.Y),
 		Size = UDim2.fromOffset(56, 56),
 		Parent = gui,
 	})
-	local buttonScale = Util.new("UIScale", { Parent = buttonHolder })
+	Util.responsive(Util.new("UIScale", { Parent = buttonHolder }), connections)
 	local toggle, toggleParts = Util.bevel(buttonHolder, { Palette = Palettes.Purple, Size = UDim2.fromScale(1, 1), StrokeThickness = 3, Icon = opts.ButtonIcon or "rbxassetid://126990543175462", IconSize = 30, ZIndex = 3, Hover = 1.08 })
 	if toggleParts.icon then
 		toggleParts.icon.Size = UDim2.fromScale(0.56, 0.56)
@@ -4062,7 +4063,7 @@ function Library:CreateStealPanel(opts)
 	end
 	-- The game's own button look: opts.ButtonTemplate() returns one of its right-column buttons; a copy of it (its
 	-- gradient, both strokes, the stud Pattern and the icon slot, everything else stripped) replaces our bevel, with
-	-- our icon in its slot. Tried again on the alignment ticks until the game's HUD is there.
+	-- our icon in its slot. Tried again on the icon refresh ticks until the game's HUD is there.
 	local KEEP = { Pattern = true, ImageLabel = true }
 	local templated = false
 	local function useTemplate()
@@ -4110,75 +4111,15 @@ function Library:CreateStealPanel(opts)
 		keepIcon()
 	end
 	useTemplate()
-	-- Alignment with the game's own button column: opts.AlignWith() returns its first visible button and the one
-	-- under it; ours takes the first one's size and sits one step (their spacing) above it, re-checked every half
-	-- second (their HUD scales with the screen). Without them it keeps its default spot and the responsive scale.
-	-- Cutscenes shrink / slide / hide the game's HUD: a reading taken then (HUD disabled or hidden, the button smaller
-	-- than the last good size or off screen) is ignored and the last good size and spot are kept; the last good size
-	-- only resets when the screen itself changes size.
-	local alignClock = 1
-	local goodSize, goodViewport
-	local function hudShown(object)
-		local node = object
-		while node and not node:IsA("LayerCollector") do
-			if node:IsA("GuiObject") and not node.Visible then return false end
-			node = node.Parent
-		end
-		return node == nil or not node:IsA("ScreenGui") or node.Enabled
-	end
+	-- Keep the toggle in normalized screen coordinates. The game's HUD may slide, hide or change
+	-- insets during cutscenes; it supplies appearance only, never our position or screen origin.
+	local iconClock = 0
 	table.insert(connections, runService.Heartbeat:Connect(function(deltaTime)
-		alignClock += deltaTime
-		if alignClock < 0.5 then
-			return
-		end
-		alignClock = 0
+		iconClock += deltaTime
+		if iconClock < 0.5 then return end
+		iconClock = 0
 		useTemplate()
 		keepIcon()
-		local ok, top, below = pcall(function()
-			if type(opts.AlignWith) == "function" then
-				return opts.AlignWith()
-			end
-		end)
-		local camera = workspace.CurrentCamera
-		local viewport = camera and camera.ViewportSize or Vector2.zero
-		if viewport ~= goodViewport then
-			goodViewport, goodSize = viewport, nil
-		end
-		if not ok or typeof(top) ~= "Instance" or not top:IsA("GuiObject") or top.AbsoluteSize.X <= 0 then
-			if not goodSize then
-				buttonScale.Scale = Util.deviceScale()
-			end
-			return
-		end
-		local size = top.AbsoluteSize
-		local position = top.AbsolutePosition
-		local onScreen = position.X >= 0 and position.Y >= 0 and position.X + size.X <= viewport.X + 1 and position.Y + size.Y <= viewport.Y + 1
-		if not hudShown(top) or not onScreen or (goodSize and size.X < goodSize.X * 0.9) then
-			return
-		end
-		goodSize = size
-		-- Same screen space as the game's HUD (topbar inset / safe insets), so its AbsolutePosition maps onto ours.
-		local hudGui = top:FindFirstAncestorWhichIsA("ScreenGui")
-		if hudGui then
-			if gui.IgnoreGuiInset ~= hudGui.IgnoreGuiInset then gui.IgnoreGuiInset = hudGui.IgnoreGuiInset end
-			pcall(function()
-				if gui.ScreenInsets ~= hudGui.ScreenInsets then gui.ScreenInsets = hudGui.ScreenInsets end
-			end)
-		end
-		local step = (typeof(below) == "Instance" and below:IsA("GuiObject")) and (below.AbsolutePosition.Y - top.AbsolutePosition.Y) or (size.Y * 1.35)
-		if step < size.Y * 0.9 or step > size.Y * 2.5 then
-			step = size.Y * 1.35
-		end
-		local center = top.AbsolutePosition + size / 2
-		buttonScale.Scale = 1
-		buttonHolder.Size = UDim2.fromOffset(size.X, size.Y)
-		-- AbsolutePosition is screen space; our Position is relative to our own ScreenGui, whose origin may differ
-		-- from the game's (topbar inset, CoreGui / gethui container), so convert through our gui's AbsolutePosition.
-		local origin = gui.AbsolutePosition
-		buttonHolder.Position = UDim2.fromOffset(center.X - origin.X, center.Y - step - origin.Y)
-		if panel._badge then
-			panel._badge.Size = UDim2.fromOffset(size.X * 0.38, size.X * 0.38)
-		end
 	end))
 	local badge = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -4, 0, 4), Size = UDim2.fromOffset(28, 28), BackgroundColor3 = Color3.fromRGB(230, 20, 40), BorderSizePixel = 0, ZIndex = 8, Parent = buttonHolder })
 	Util.corner(badge, 999)
@@ -4192,7 +4133,7 @@ function Library:CreateStealPanel(opts)
 		-- Closing slides it past the screen edge: its on-screen width (after the responsive UIScale) plus the gap it
 		-- opens at, then hides it. Opening shows it and slides it back to its spot.
 		local shown = holder.AbsoluteSize.X > 0 and holder.AbsoluteSize.X or width
-		local gap = opts.EdgeGap or 112
+		local gap = edgeGap * gui.AbsoluteSize.X
 		if panel.Collapsed then
 			Util.tween(holder, 0.3, { Position = openPosition + UDim2.fromOffset(right and shown + gap + 30 or -(shown + gap + 30), 0) }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
 			task.delay(0.3, function()
