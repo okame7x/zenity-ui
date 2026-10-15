@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.15-6"
+Library.Version = "2026.10.15-7"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -102,6 +102,7 @@ function Util.new(className, props, children)
 		child.Parent = object
 	end
 	object.Parent = parent
+	if className == "ScreenGui" and Library.ThemeGui then Library:ThemeGui(object) end
 	return object
 end
 
@@ -2215,8 +2216,23 @@ Window.__index = Window
 -- the accent's hue and saturation while keeping its own brightness, so the light and dark shades stay shades; nil puts
 -- the original purples back. Icon: a tint for every icon image (Util.icon), nil for their own colours. Originals are
 -- remembered per instance, so the theme can change any number of times; new instances are themed as they appear.
-Library.ThemeState = { accent = nil, icon = nil, objects = setmetatable({}, { __mode = "k" }), screens = {} }
+-- Roblox can recreate Lua wrappers for parent-owned Instances. Weak keys would
+-- lose the original colors of gradients/strokes that have no other Lua owner.
+Library.ThemeState = { accent = nil, icon = nil, objects = {}, screens = {} }
 local ThemeState = Library.ThemeState
+local function themeBindings(object)
+	local bindings = ThemeState.objects[object]
+	if not bindings then
+		bindings = {}
+		ThemeState.objects[object] = bindings
+		object.Destroying:Once(function()
+			ThemeState.objects[object] = nil
+			ThemeState.screens[object] = nil
+			ThemeState.logos[object] = nil
+		end)
+	end
+	return bindings
+end
 local THEMED = {
 	GuiObject = { "BackgroundColor3" },
 	ImageLabel = { "ImageColor3" },
@@ -2322,8 +2338,7 @@ end
 
 local function retheme(object)
 	if themeExcluded(object) then return end
-	local bindings = ThemeState.objects[object]
-	if not bindings then bindings = {}; ThemeState.objects[object] = bindings end
+	local bindings = themeBindings(object)
 	local wasTweening, tweens = {}, {}
 	for property, binding in bindings do
 		if binding.tween then
@@ -2360,8 +2375,7 @@ function Library.ThemeBind(object, property, value)
 	if not THEMED_PROPERTIES[property] then return value end
 	local kind = typeof(value)
 	if kind ~= "Color3" and kind ~= "ColorSequence" then return value end
-	local bindings = ThemeState.objects[object]
-	if not bindings then bindings = {}; ThemeState.objects[object] = bindings end
+	local bindings = themeBindings(object)
 	local previous = bindings[property]
 	if previous and previous.tween then previous.tween:Cancel() end
 	local wanted = themeExcluded(object) and value or themeValue(value)
