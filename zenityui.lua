@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.15-1"
+Library.Version = "2026.10.15-2"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -572,6 +572,81 @@ function Util.responsive(scale, connections, factor)
 	end
 	return update
 end
+
+-- Read the live HUD layout rather than guessing screen percentages. The dump identifies
+-- HUD.GameHUD.LeftControls.ShopBTN and HUD.GameHUD.RightButtons as the reference controls.
+function Util.gameHudButtons(side)
+	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+	local hud = playerGui and playerGui:FindFirstChild("HUD")
+	local gameHud = hud and hud:FindFirstChild("GameHUD")
+	local column = gameHud and gameHud:FindFirstChild(side == "Left" and "LeftControls" or "RightButtons")
+	if not column then return end
+	if side == "Left" then
+		return column:FindFirstChild("ShopBTN"), column:FindFirstChild("IndexBTN")
+	end
+	local buttons = {}
+	for _, child in column:GetChildren() do
+		if child:IsA("GuiButton") and child.Visible then
+			table.insert(buttons, child)
+		end
+	end
+	table.sort(buttons, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+	return buttons[1], buttons[2]
+end
+
+-- Convert through an unscaled origin marker in our own ScreenGui. No game insets are
+-- copied onto the window/panel, and no game GUI is reparented or modified.
+function Util.aboveHud(target, gui, connections, resolve, resized)
+	local origin = Util.new("Frame", {
+		Name = "HudOrigin", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+		Active = false, Parent = gui,
+	})
+	local scale = target:FindFirstChildOfClass("UIScale")
+	local previousSize, previousViewport
+	local function visible(object)
+		local node = object
+		while node do
+			if node:IsA("GuiObject") and not node.Visible then return false end
+			if node:IsA("ScreenGui") and not node.Enabled then return false end
+			node = node.Parent
+		end
+		return object.Parent ~= nil
+	end
+	local function update()
+		local ok, top, below = pcall(resolve)
+		if not ok or typeof(top) ~= "Instance" or not top:IsA("GuiObject") or not visible(top) then return end
+		local size, position = top.AbsoluteSize, top.AbsolutePosition
+		local viewport, screenOrigin = origin.AbsoluteSize, origin.AbsolutePosition
+		if viewport ~= previousViewport then
+			previousViewport, previousSize = viewport, nil
+		end
+		if size.X <= 0 or size.Y <= 0 or viewport.X <= 0 or viewport.Y <= 0 then return end
+		local localPosition = position - screenOrigin
+		if localPosition.X < 0 or localPosition.Y < 0 or localPosition.X + size.X > viewport.X + 1
+			or localPosition.Y + size.Y > viewport.Y + 1 then return end
+		-- Ignore transient shrink animations; permit a new size after a viewport change.
+		if previousSize and size.Y < previousSize.Y * 0.9 then return end
+		local step = size.Y * 1.35
+		if typeof(below) == "Instance" and below:IsA("GuiObject") and visible(below) then
+			local distance = below.AbsolutePosition.Y + below.AbsoluteSize.Y / 2 - position.Y - size.Y / 2
+			if distance >= size.Y * 0.9 and distance <= size.Y * 2.5 then step = distance end
+		end
+		local side = size.Y
+		local center = position + size / 2 - screenOrigin - Vector2.new(0, step)
+		center = Vector2.new(math.clamp(center.X, side / 2, math.max(side / 2, viewport.X - side / 2)),
+			math.clamp(center.Y, side / 2, math.max(side / 2, viewport.Y - side / 2)))
+		previousSize = size
+		-- The responsive UIScale still runs on viewport changes; alignment uses actual HUD pixels.
+		if scale then scale.Scale = 1 end
+		local nextSize, nextPosition = UDim2.fromOffset(side, side), UDim2.fromOffset(center.X, center.Y)
+		if target.Size ~= nextSize then target.Size = nextSize end
+		if target.Position ~= nextPosition then target.Position = nextPosition end
+		if resized then resized(localPosition, size, viewport) end
+	end
+	update()
+	table.insert(connections, runService.RenderStepped:Connect(update))
+end
+
 
 function Util.parent(preferred)
 	if typeof(preferred) == "Instance" then
@@ -3085,6 +3160,9 @@ function Library:CreateWindow(opts)
 	Util.icon(openLogo, opts.OpenLogo or Assets.OpenLogo)
 	Library.TintLogo(openLogo)
 	self.OpenButton = openHolder
+	if not opts.OpenPosition then
+		Util.aboveHud(openHolder, gui, connections, function() return Util.gameHudButtons("Left") end)
+	end
 	local _ = openParts
 	-- Fixed in place (not draggable): one click opens the window.
 	openButton.MouseButton1Click:Connect(function()
@@ -4111,8 +4189,27 @@ function Library:CreateStealPanel(opts)
 		keepIcon()
 	end
 	useTemplate()
-	-- Keep the toggle in normalized screen coordinates. The game's HUD may slide, hide or change
-	-- insets during cutscenes; it supplies appearance only, never our position or screen origin.
+	-- Align to the actual HUD controls; retain the last valid position while the HUD is hidden. The game may change
+	-- its insets without changing our own screen origin.
+	if not opts.ButtonPosition then
+		Util.aboveHud(buttonHolder, gui, connections, function()
+			if type(opts.AlignWith) == "function" then return opts.AlignWith() end
+			return Util.gameHudButtons(right and "Right" or "Left")
+		end, function(position, size, viewport)
+			if opts.EdgeGap then return end
+			-- Keep the open panel beside the HUD column, with a gap proportional to its buttons.
+			local x = right and (position.X - size.Y * 0.25) or (position.X + size.X + size.Y * 0.25)
+			x = math.clamp(x, 0, viewport.X)
+			local nextPosition = UDim2.fromScale(x / viewport.X, 0.5)
+			if nextPosition ~= openPosition then
+				openPosition = nextPosition
+				edgeGap = right and (1 - x / viewport.X) or (x / viewport.X)
+			end
+			if not panel.Collapsed and os.clock() >= (panel._slidingUntil or 0) and holder.Position ~= openPosition then
+				holder.Position = openPosition
+			end
+		end)
+	end
 	local iconClock = 0
 	table.insert(connections, runService.Heartbeat:Connect(function(deltaTime)
 		iconClock += deltaTime
@@ -4128,6 +4225,7 @@ function Library:CreateStealPanel(opts)
 	panel._badge, panel._badgeText = badge, badgeText
 	function panel:SetCollapsed(value)
 		panel.Collapsed = value == true
+		panel._slidingUntil = os.clock() + 0.4
 		panel._collapseId = (panel._collapseId or 0) + 1
 		local id = panel._collapseId
 		-- Closing slides it past the screen edge: its on-screen width (after the responsive UIScale) plus the gap it
@@ -4206,6 +4304,7 @@ function Library:CreateStealPanel(opts)
 		gui:Destroy()
 	end
 
+	panel._slidingUntil = os.clock() + 0.5
 	holder.Position = openPosition + UDim2.fromOffset(right and width * 1.3 + 30 or -(width * 1.3 + 30), 0)
 	Util.tween(holder, 0.45, { Position = openPosition }, Enum.EasingStyle.Back)
 	return panel

@@ -8,8 +8,8 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/okame
 
 ## Screen positioning
 
-The default main-window opener, Steal panel and Steal toggle use screen percentages based on the original 1050 x 620 layout. Their anchors stay at the same relative screen position when the viewport changes; their sizes continue to use responsive scaling.
+In the game HUD (`PlayerGui.HUD.GameHUD`), the main opener is centered one button spacing above `LeftControls.ShopBTN`, using the spacing to `IndexBTN`. The Steal toggle is centered one spacing above the first visible button in `RightButtons`, using the same square height. The expanded panel opens beside that column.
 
-`OpenPosition` and `ButtonPosition` still accept explicit UDim2 overrides. Use `UDim2.fromScale(x, y)` for resolution-independent custom positions. `EdgeGap` is measured in reference-layout pixels (1050 pixels wide) and scales with viewport width. `Side = "Left"` mirrors the Steal layout.
+Alignment reads the actual rendered positions and sizes each frame, so it follows viewport/layout changes. A marker in Zenity's own ScreenGui converts screen coordinates without copying the game's insets. Hidden, off-screen and temporarily shrunken HUD controls do not replace the last valid layout.
 
-`AlignWith` no longer moves or resizes the Steal toggle or changes screen insets. `ButtonTemplate` still supplies its appearance, so game HUD animations do not move the Zenity controls.
+`OpenPosition` and `ButtonPosition` preserve explicit UDim2 overrides. `AlignWith()` can supply the Steal reference buttons; otherwise the game HUD is discovered automatically. `ButtonTemplate` still supplies the toggle appearance. `EdgeGap` overrides automatic panel spacing, in reference-layout pixels (1050 pixels wide). If the game HUD is unavailable, the default positions fall back to screen percentages.
