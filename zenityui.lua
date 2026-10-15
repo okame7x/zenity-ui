@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.15-5"
+Library.Version = "2026.10.15-6"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -1209,7 +1209,7 @@ function Container:AddDropdown(idOrOptions, options)
 	})
 	Util.corner(chip, 4)
 	Util.stroke(chip, Theme.RecessBorder, 1.2)
-	local valueLabel = Util.text(chip, { Name = "Value", TextSize = 13, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 4 })
+	local valueLabel = Util.text(chip, { Name = "Value", Font = Enum.Font.GothamMedium, TextSize = 13, Stroke = false, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -34, 1, 0), ZIndex = 4 })
 	local arrow = Util.text(chip, {
 		Name = "Arrow",
 		Text = "▼",
@@ -1371,7 +1371,7 @@ function Container:AddDropdown(idOrOptions, options)
 			Util.corner(root, 4)
 			local bar = Util.new("Frame", { Name = "Accent", BackgroundColor3 = Palettes.Purple.Rim, BorderSizePixel = 0, Position = UDim2.fromOffset(0, 5), Size = UDim2.new(0, 3, 1, -10), Visible = false, ZIndex = 6, Parent = root })
 			Util.corner(bar, 2)
-			local optionLabel = Util.text(root, { Name = "Label", Text = tostring(option), TextSize = 13, Stroke = 1.6, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -46, 1, 0), ZIndex = 6 })
+			local optionLabel = Util.text(root, { Name = "Label", Text = tostring(option), Font = Enum.Font.GothamMedium, TextSize = 13, Stroke = false, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -46, 1, 0), ZIndex = 6 })
 			-- Hook for the host (rarity look, option icons): called once per option instead of watching the window.
 			if type(Library.OptionHook) == "function" then
 				task.defer(Util.safeCall, Library.OptionHook, optionLabel)
