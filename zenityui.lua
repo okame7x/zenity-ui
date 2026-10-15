@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.15-4"
+Library.Version = "2026.10.15-5"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -116,7 +116,12 @@ function Util.tween(object, time, props, style, direction)
 		props = table.clone(props)
 		props.BackgroundTransparency = Library.SurfaceValue(object, props.BackgroundTransparency)
 	end
+	if Library.ThemeBind then
+		props = table.clone(props)
+		for property, value in props do props[property] = Library.ThemeBind(object, property, value) end
+	end
 	local tween = tweenService:Create(object, info, props)
+	if Library.ThemeTween then Library.ThemeTween(object, props, tween) end
 	tween:Play()
 	return tween
 end
@@ -193,7 +198,7 @@ function Util.text(parent, props)
 				Parent = label,
 			})
 		else
-			label.TextStrokeColor3 = props.StrokeColor or Theme.Ink
+			label.TextStrokeColor3 = Library.ThemeBind(label, "TextStrokeColor3", props.StrokeColor or Theme.Ink)
 			label.TextStrokeTransparency = thickness >= 1.6 and 0.45 or 0.65
 		end
 	end
@@ -348,11 +353,11 @@ function Util.bevel(parent, props)
 	parts.scale = Util.new("UIScale", { Name = "ButtonScale", Parent = root })
 	function parts.setPalette(newPalette)
 		palette = newPalette
-		parts.gradient.Color = Util.sequence(newPalette.Gradient)
-		parts.bevel.BackgroundColor3 = newPalette.Bevel
-		parts.rim.Color = newPalette.Rim
+		parts.gradient.Color = Library.ThemeBind(parts.gradient, "Color", Util.sequence(newPalette.Gradient))
+		parts.bevel.BackgroundColor3 = Library.ThemeBind(parts.bevel, "BackgroundColor3", newPalette.Bevel)
+		parts.rim.Color = Library.ThemeBind(parts.rim, "Color", newPalette.Rim)
 		if parts.damier then
-			parts.damier.ImageColor3 = newPalette.Damier
+			parts.damier.ImageColor3 = Library.ThemeBind(parts.damier, "ImageColor3", newPalette.Damier)
 		end
 	end
 	if props.Feedback ~= false then
@@ -1008,8 +1013,8 @@ function Container:AddToggle(idOrOptions, options)
 	local element = { Value = opts.Default == true, Type = "Toggle" }
 	local function render(animate)
 		local palette = element.Value and Palettes.Lime or Palettes.Silver
-		gradient.Color = Util.sequence(palette.Gradient)
-		bevel.BackgroundColor3 = palette.Bevel
+		gradient.Color = Library.ThemeBind(gradient, "Color", Util.sequence(palette.Gradient))
+		bevel.BackgroundColor3 = Library.ThemeBind(bevel, "BackgroundColor3", palette.Bevel)
 		stateLabel.Text = element.Value and "ON" or "OFF"
 		stateLabel.Position = element.Value and UDim2.fromOffset(3, 0) or UDim2.new(1, -30, 0, 0)
 		Util.tween(knob, animate and 0.22 or 0, { Position = element.Value and UDim2.new(1, -23, 0.5, -1) or UDim2.new(0, 3, 0.5, -1) }, Enum.EasingStyle.Back)
@@ -1308,10 +1313,10 @@ function Container:AddDropdown(idOrOptions, options)
 		local on = selected[option] == true
 		button.on = on
 		button.root.BackgroundTransparency = (on or button.hovered) and 0 or 1
-		button.root.BackgroundColor3 = on and Color3.fromRGB(58, 28, 96) or Theme.Card
+		button.root.BackgroundColor3 = Library.ThemeBind(button.root, "BackgroundColor3", on and Color3.fromRGB(58, 28, 96) or Theme.Card)
 		button.bar.Visible = on
 		button.check.BackgroundTransparency = on and 0 or 1
-		button.checkStroke.Color = on and Color3.new(0, 0, 0) or Theme.Muted
+		button.checkStroke.Color = Library.ThemeBind(button.checkStroke, "Color", on and Color3.new(0, 0, 0) or Theme.Muted)
 		button.mark.Visible = on
 	end
 	local function visibleCount()
@@ -1683,7 +1688,7 @@ function Container:AddProgress(idOrOptions, options)
 		Util.tween(fill, 0.25, { Size = UDim2.fromScale(element.Value, 1) })
 		valueLabel.Text = text ~= nil and tostring(text) or (math.floor(element.Value * 100 + 0.5) .. "%")
 		if colors then
-			gradient.Color = Util.sequence(colors)
+			gradient.Color = Library.ThemeBind(gradient, "Color", Util.sequence(colors))
 		end
 	end
 	element:Set(opts.Default or 0, opts.Text)
@@ -1766,9 +1771,9 @@ function Container:AddAssetFilter(options)
 	end
 	local function paint(row)
 		local on = selectedSet[row.id] == true
-		row.stroke.Color = on and Palettes.Lime.Gradient[1] or Color3.new(0, 0, 0)
+		row.stroke.Color = Library.ThemeBind(row.stroke, "Color", on and Palettes.Lime.Gradient[1] or Color3.new(0, 0, 0))
 		row.chipText.Text = on and "FARM" or "SKIP"
-		row.chipGradient.Color = on and lime or silver
+		row.chipGradient.Color = Library.ThemeBind(row.chipGradient, "Color", on and lime or silver)
 	end
 	-- Stacks the rows matching the search and sizes the canvas.
 	local function layout()
@@ -1901,7 +1906,7 @@ function Container:AddAssetLogItem(item)
 		Size = UDim2.fromOffset(78, 24),
 	})
 	chip.BackgroundTransparency = 0
-	chip.BackgroundColor3 = Theme.Recess
+	chip.BackgroundColor3 = Library.ThemeBind(chip, "BackgroundColor3", Theme.Recess)
 	Util.corner(chip, 4)
 	Util.stroke(chip, Color3.new(0, 0, 0), 1.6)
 	frame:SetAttribute("ZenityNoTheme", true)
@@ -1923,7 +1928,7 @@ function Container:AddAssetLogItem(item)
 			Util.icon(badge, data.EggIcon)
 		end
 		name.Text = tostring(data.Name or "?")
-		name.TextColor3 = rarityColor:Lerp(Color3.new(1, 1, 1), 0.25)
+		name.TextColor3 = Library.ThemeBind(name, "TextColor3", rarityColor:Lerp(Color3.new(1, 1, 1), 0.25))
 		details.Text = tostring(data.Details or "")
 		stats.Text = tostring(data.Stats or "")
 		chip.Visible = data.Chip ~= nil
@@ -2026,8 +2031,8 @@ function Container:AddChips(options)
 		for key, chip in chips do
 			local on = element.Value == key
 			chip.gradient.Enabled = on
-			chip.frame.BackgroundColor3 = on and Color3.new(1, 1, 1) or Theme.Card
-			chip.label.TextColor3 = on and Color3.new(1, 1, 1) or Theme.Muted
+			chip.frame.BackgroundColor3 = Library.ThemeBind(chip.frame, "BackgroundColor3", on and Color3.new(1, 1, 1) or Theme.Card)
+			chip.label.TextColor3 = Library.ThemeBind(chip.label, "TextColor3", on and Color3.new(1, 1, 1) or Theme.Muted)
 		end
 	end
 	for index, entry in opts.Values do
@@ -2124,9 +2129,9 @@ function Container:AddCardGrid(options)
 			local color = typeof(item.RarityColor) == "Color3" and item.RarityColor or Theme.CardHighlight
 			card.frame.Visible = true
 			card.frame.LayoutOrder = index
-			card.tint.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, color:Lerp(Theme.Card, 0.55)), ColorSequenceKeypoint.new(0.6, Theme.Card), ColorSequenceKeypoint.new(1, Theme.Card) })
-			card.stroke.Color = item.Highlight and Palettes.Purple.Rim or Color3.new(0, 0, 0)
-			card.wellStroke.Color = color
+			card.tint.Color = Library.ThemeBind(card.tint, "Color", ColorSequence.new({ ColorSequenceKeypoint.new(0, color:Lerp(Theme.Card, 0.55)), ColorSequenceKeypoint.new(0.6, Theme.Card), ColorSequenceKeypoint.new(1, Theme.Card) }))
+			card.stroke.Color = Library.ThemeBind(card.stroke, "Color", item.Highlight and Palettes.Purple.Rim or Color3.new(0, 0, 0))
+			card.wellStroke.Color = Library.ThemeBind(card.wellStroke, "Color", color)
 			if item.Icon ~= card.iconId then
 				card.iconId = item.Icon
 				Util.icon(card.icon, item.Icon)
@@ -2137,9 +2142,9 @@ function Container:AddCardGrid(options)
 				Util.icon(card.badge, item.Badge)
 			end
 			card.name.Text = tostring(item.Name or "?")
-			card.name.TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.3)
+			card.name.TextColor3 = Library.ThemeBind(card.name, "TextColor3", color:Lerp(Color3.new(1, 1, 1), 0.3))
 			card.rarity.Text = string.upper(tostring(item.Rarity or ""))
-			card.rarity.TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.15)
+			card.rarity.TextColor3 = Library.ThemeBind(card.rarity, "TextColor3", color:Lerp(Color3.new(1, 1, 1), 0.15))
 			local info = item.Info and item.Info ~= "" and ('  <font color="#FFC83C">%s</font>'):format(tostring(item.Info)) or ""
 			card.value.Text = tostring(item.Value or "") .. info
 			card.extra.Text = tostring(item.Extra or "")
@@ -2178,7 +2183,7 @@ function Container:AddInfoList(options)
 			entry.frame.BackgroundTransparency = row.Header and 1 or 0
 			entry.frame.Size = UDim2.new(1, 0, 0, row.Header and 18 or 26)
 			entry.left.Text = tostring(row.Left or "")
-			entry.left.TextColor3 = row.Header and ((row.Colors or Hud.Gold)[1]) or Theme.Text
+			entry.left.TextColor3 = Library.ThemeBind(entry.left, "TextColor3", row.Header and ((row.Colors or Hud.Gold)[1]) or Theme.Text)
 			entry.right.Text = tostring(row.Right or "")
 		end
 		for index = #rows + 1, #pool do
@@ -2210,7 +2215,7 @@ Window.__index = Window
 -- the accent's hue and saturation while keeping its own brightness, so the light and dark shades stay shades; nil puts
 -- the original purples back. Icon: a tint for every icon image (Util.icon), nil for their own colours. Originals are
 -- remembered per instance, so the theme can change any number of times; new instances are themed as they appear.
-Library.ThemeState = { accent = nil, icon = nil, objects = {}, screens = {} }
+Library.ThemeState = { accent = nil, icon = nil, objects = setmetatable({}, { __mode = "k" }), screens = {} }
 local ThemeState = Library.ThemeState
 local THEMED = {
 	GuiObject = { "BackgroundColor3" },
@@ -2242,7 +2247,6 @@ do
 	Library.AddAccentColors({ purple.Gradient[1], purple.Gradient[2], purple.Bevel, purple.Rim, purple.Damier, purple.Dark,
 		Library.Theme.Accent, Library.Theme.Accent2 })
 end
-local themedColors = {}
 local function isPurple(color)
 	return accentKeys[colorKey(color)] == true
 end
@@ -2255,25 +2259,7 @@ function Library.ThemeColor(color)
 	local _, saturation, value = color:ToHSV()
 	local accentHue, accentSaturation = accent:ToHSV()
 	local themed = Color3.fromHSV(accentHue, math.clamp(saturation * accentSaturation, 0, 1), value)
-	themedColors[colorKey(themed)] = color
 	return themed
-end
-
--- Back to the purple a themed colour came from. A host that repaints with the themed palette (the Steal / Status HUDs)
--- would otherwise make the themed colour the new "original", and the next theme change would skip it.
-local function unthemeValue(value)
-	if typeof(value) == "Color3" then
-		return themedColors[colorKey(value)] or value
-	elseif typeof(value) == "ColorSequence" then
-		local points, changed = {}, false
-		for index, point in value.Keypoints do
-			local original = themedColors[colorKey(point.Value)]
-			changed = changed or original ~= nil
-			points[index] = ColorSequenceKeypoint.new(point.Time, original or point.Value)
-		end
-		return changed and ColorSequence.new(points) or value
-	end
-	return value
 end
 
 local function themeValue(value)
@@ -2317,42 +2303,88 @@ function Library.TintLogo(image, isLogo)
 	image.ImageColor3 = isLogo ~= false and ThemeState.icon or Color3.new(1, 1, 1)
 end
 
--- Re-colours one object for the current theme: only colours that come from the accent purple (as built, or already
--- themed) change, everything the UI painted otherwise is left alone. Runs once per theme change, never in a loop.
+-- Each property keeps its own source color. A rendered white/red/gray can also be
+-- a semantic color elsewhere: never infer its origin from a global RGB reverse map.
+local function sameThemeValue(a, b)
+	if typeof(a) ~= typeof(b) then return false end
+	if typeof(a) == "Color3" then
+		return math.abs(a.R - b.R) < 0.00001 and math.abs(a.G - b.G) < 0.00001 and math.abs(a.B - b.B) < 0.00001
+	elseif typeof(a) == "ColorSequence" then
+		if #a.Keypoints ~= #b.Keypoints then return false end
+		for index, point in a.Keypoints do
+			local other = b.Keypoints[index]
+			if math.abs(point.Time - other.Time) > 0.00001 or not sameThemeValue(point.Value, other.Value) then return false end
+		end
+		return true
+	end
+	return a == b
+end
+
 local function retheme(object)
-	local excluded
+	if themeExcluded(object) then return end
+	local bindings = ThemeState.objects[object]
+	if not bindings then bindings = {}; ThemeState.objects[object] = bindings end
+	local wasTweening, tweens = {}, {}
+	for property, binding in bindings do
+		if binding.tween then
+			wasTweening[property], tweens[binding.tween] = true, true
+			binding.tween = nil
+		end
+	end
+	for tween in tweens do tween:Cancel() end
 	for className, properties in THEMED do
 		if object:IsA(className) then
 			for _, property in properties do
-				-- Icons keep their own colours (the tab icons take the Icon Color in SetTheme).
 				local icon = property == "ImageColor3" and object:GetAttribute("ZenityIcon")
 				local ok, current = pcall(function() return object[property] end)
 				if ok and not icon then
-					local wanted = themeValue(unthemeValue(current))
-					if wanted ~= current then
-						if excluded == nil then
-							local checked, result = pcall(themeExcluded, object)
-							excluded = checked and result
-						end
-						if excluded then return end
-						pcall(function() object[property] = wanted end)
+					local binding = bindings[property]
+					if not binding then
+						binding = { original = current, applied = current }
+						bindings[property] = binding
+					elseif not wasTweening[property] and not sameThemeValue(current, binding.applied) then
+						-- An explicit repaint supersedes this property's previous source.
+						binding.original = current
 					end
+					local wanted = themeValue(binding.original)
+					binding.applied = wanted
+					if not sameThemeValue(wanted, current) then object[property] = wanted end
 				end
 			end
 		end
 	end
 end
 
--- Util.new hands every colour it sets through here: the object is remembered for later theme changes and is born in
--- the current theme (a purple from the palette or a literal comes out as the accent).
 local THEMED_PROPERTIES = { BackgroundColor3 = true, ImageColor3 = true, TextColor3 = true, TextStrokeColor3 = true, Color = true }
 function Library.ThemeBind(object, property, value)
 	if not THEMED_PROPERTIES[property] then return value end
 	local kind = typeof(value)
 	if kind ~= "Color3" and kind ~= "ColorSequence" then return value end
-	ThemeState.objects[object] = true
-	return ThemeState.accent and themeValue(value) or value
+	local bindings = ThemeState.objects[object]
+	if not bindings then bindings = {}; ThemeState.objects[object] = bindings end
+	local previous = bindings[property]
+	if previous and previous.tween then previous.tween:Cancel() end
+	local wanted = themeExcluded(object) and value or themeValue(value)
+	bindings[property] = { original = value, applied = wanted }
+	return wanted
 end
+
+function Library.ThemeTween(object, props, tween)
+	local bindings = ThemeState.objects[object]
+	if not bindings then return end
+	local tracked = {}
+	for property in props do
+		local binding = bindings[property]
+		if binding then binding.tween = tween; table.insert(tracked, binding) end
+	end
+	if #tracked == 0 then return end
+	local connection
+	connection = tween.Completed:Connect(function()
+		for _, binding in tracked do if binding.tween == tween then binding.tween = nil end end
+		connection:Disconnect()
+	end)
+end
+
 
 -- A host's own screen (the Anti Guard overlay, the mutation window): themed now and on every later change.
 function Library:ThemeGui(gui)
@@ -2363,36 +2395,12 @@ function Library:ThemeGui(gui)
 	end
 end
 
--- Library colour tables follow too, so controls built or repainted after the change use the theme.
-local themeTables = { Library.Palettes.Purple, Library.Theme }
-local tableOriginals = {}
-local function themeTable(source)
-	-- Deep copy of the originals: the nested lists (Gradient) are themed in place, so a shallow copy lost them.
-	if not tableOriginals[source] then
-		local copy = {}
-		for key, value in source do
-			copy[key] = type(value) == "table" and table.clone(value) or value
-		end
-		tableOriginals[source] = copy
-	end
-	for key, value in tableOriginals[source] do
-		if type(value) == "table" then
-			for index, entry in value do
-				source[key][index] = themeValue(entry)
-			end
-		else
-			source[key] = themeValue(value)
-		end
-	end
-end
-
+-- Palette tables stay canonical. Constructors, repaints and tweens bind their
+-- original values per property; mutating the palettes would lose that provenance.
 function Library:SetTheme(options)
 	options = type(options) == "table" and options or {}
 	ThemeState.accent = typeof(options.Accent) == "Color3" and options.Accent or nil
 	ThemeState.icon = typeof(options.Icon) == "Color3" and options.Icon or nil
-	for _, source in themeTables do
-		themeTable(source)
-	end
 	for object in ThemeState.objects do
 		if object.Parent then
 			pcall(retheme, object)
@@ -3272,10 +3280,10 @@ function Window:CreateTab(opts, icon)
 	-- Hover lightens the idle card instead of growing the button (a grown button spilled past the tab list, which
 	-- clips it, and its black outline was cut off on the sides).
 	button.MouseEnter:Connect(function()
-		idle.BackgroundColor3 = Theme.Card:Lerp(Color3.new(1, 1, 1), 0.07)
+		idle.BackgroundColor3 = Library.ThemeBind(idle, "BackgroundColor3", Theme.Card:Lerp(Color3.new(1, 1, 1), 0.07))
 	end)
 	button.MouseLeave:Connect(function()
-		idle.BackgroundColor3 = Theme.Card
+		idle.BackgroundColor3 = Library.ThemeBind(idle, "BackgroundColor3", Theme.Card)
 	end)
 
 	local iconImage = Util.new("ImageLabel", {
@@ -3341,17 +3349,17 @@ function Window:SelectTab(target)
 	if previous then
 		previous.Page.Visible = false
 		Util.tween(previous._idle, 0.15, { BackgroundTransparency = 0 })
-		previous._caption.TextColor3 = Theme.Muted
+		previous._caption.TextColor3 = Library.ThemeBind(previous._caption, "TextColor3", Theme.Muted)
 		-- An icon tint stays on the tabs that are not picked too (a little dimmer), instead of falling back to grey.
 		previous._icon:SetAttribute("ZenitySelected", false)
-		previous._icon.ImageColor3 = Library.TabIconColor(false)
+		previous._icon.ImageColor3 = Library.ThemeBind(previous._icon, "ImageColor3", Library.TabIconColor(false))
 		previous._parts.setPalette(Palettes.Silver)
 	end
 	target._parts.setPalette(Palettes.Purple)
 	Util.tween(target._idle, 0.15, { BackgroundTransparency = 1 })
-	target._caption.TextColor3 = Theme.Text
+	target._caption.TextColor3 = Library.ThemeBind(target._caption, "TextColor3", Theme.Text)
 	target._icon:SetAttribute("ZenitySelected", true)
-	target._icon.ImageColor3 = Library.TabIconColor(true)
+	target._icon.ImageColor3 = Library.ThemeBind(target._icon, "ImageColor3", Library.TabIconColor(true))
 	-- New page slides up a little and fades its rows in.
 	local page = target.Page
 	page.Visible = true
@@ -3485,7 +3493,7 @@ Library.Notification = Library.Notify
 -- ============================================================================================================
 
 function Hud.setColors(gradient, colors)
-	gradient.Color = Util.sequence(colors)
+	gradient.Color = Library.ThemeBind(gradient, "Color", Util.sequence(colors))
 end
 
 function Hud.pill(parent, text, colors, layoutOrder)
@@ -3793,7 +3801,7 @@ function Library:CreateStatus(opts)
 		local state = Hud.StateColors[info.State] and info.State or "idle"
 		stateText.Text = Hud.StateWords[state]
 		Hud.setColors(stateGradient, Hud.StateColors[state])
-		tileStroke.Color = Hud.StateColors[state][1]
+		tileStroke.Color = Library.ThemeBind(tileStroke, "Color", Hud.StateColors[state][1])
 		tagPill.Visible = type(info.Tag) == "string" and info.Tag ~= ""
 		tagText.Text = info.Tag or ""
 		title.Text = info.Text or opts.Title or "Zenity Hub"
@@ -3954,7 +3962,7 @@ function Hud.stealCard(panel, list)
 		card.baseStroke = item.Featured and Palettes.Purple.Rim or (best and Hud.Gold[1] or Color3.new(0, 0, 0))
 		card.featured = item.Featured == true
 		if not card.hovered then
-			card.stroke.Color = card.baseStroke
+			card.stroke.Color = Library.ThemeBind(card.stroke, "Color", card.baseStroke)
 		end
 		card.stroke.Thickness = big and 3 or 2.4
 		card.tint.Color = ColorSequence.new({
@@ -3962,11 +3970,11 @@ function Hud.stealCard(panel, list)
 			ColorSequenceKeypoint.new(0.5, Theme.Card),
 			ColorSequenceKeypoint.new(1, Theme.Card),
 		})
-		card.wellStroke.Color = color
+		card.wellStroke.Color = Library.ThemeBind(card.wellStroke, "Color", color)
 		card.name.Text = tostring(item.Name or "?")
-		card.name.TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.3)
+		card.name.TextColor3 = Library.ThemeBind(card.name, "TextColor3", color:Lerp(Color3.new(1, 1, 1), 0.3))
 		card.rarity.Text = string.upper(tostring(item.Rarity or ""))
-		card.rarity.TextColor3 = color:Lerp(Color3.new(1, 1, 1), 0.15)
+		card.rarity.TextColor3 = Library.ThemeBind(card.rarity, "TextColor3", color:Lerp(Color3.new(1, 1, 1), 0.15))
 		local info = item.Info and item.Info ~= "" and ('  <font color="#FFC83C">%s</font>'):format(tostring(item.Info)) or ""
 		card.value.Text = tostring(item.Value or "") .. info
 		-- Bigger cards get a bigger preview, the texts move right with it.
@@ -4292,7 +4300,7 @@ function Library:CreateStealPanel(opts)
 	end
 	function panel:SetSubtitle(value, color)
 		subtitle.Text = tostring(value or "")
-		subtitle.TextColor3 = typeof(color) == "Color3" and color:Lerp(Color3.new(1, 1, 1), 0.35) or Color3.fromRGB(236, 214, 255)
+		subtitle.TextColor3 = Library.ThemeBind(subtitle, "TextColor3", typeof(color) == "Color3" and color:Lerp(Color3.new(1, 1, 1), 0.35) or Color3.fromRGB(236, 214, 255))
 	end
 	function panel:SetVisible(value)
 		panel.Visible = value ~= false
