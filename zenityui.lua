@@ -14,7 +14,7 @@ local localPlayer = playersService.LocalPlayer
 
 local Library = { ReducedMotion = false, Screens = {}, Touch = userInputService.TouchEnabled and not userInputService.KeyboardEnabled }
 -- Bumped on every hosted update; the hub prints it on load, so the running build can be checked from the console.
-Library.Version = "2026.10.15-2"
+Library.Version = "2026.10.15-3"
 
 -- Check-UI palette (canvas, cards, strokes) with the purple header archetype as the accent.
 Library.Theme = {
@@ -3623,7 +3623,10 @@ function Library:CreateStatus(opts)
 	-- Title and detail outlined with a real UIStroke: the legacy text stroke smudged at these sizes.
 	local title = Util.text(frame, { Name = "Title", TextSize = 15, Stroke = 1.5, UIStroke = true, Position = UDim2.fromOffset(84, 51), Size = UDim2.new(1, -94, 0, 18), ZIndex = 2 })
 	local detail = Util.text(frame, { Name = "Detail", TextSize = 11, Stroke = 1, UIStroke = true, TextColor3 = Theme.Muted, Position = UDim2.fromOffset(84, 70), Size = UDim2.new(1, -94, 0, 14), ZIndex = 2 })
-	local chipRow = Util.new("Frame", { BackgroundTransparency = 1, ClipsDescendants = true, Position = UDim2.fromOffset(84, 69), Size = UDim2.new(1, -94, 0, 16), Visible = false, ZIndex = 2, Parent = frame })
+	-- The 16px pills have a 1.5px outer stroke. Reserve 2px on every side inside the
+	-- clipping row, while keeping the pills at their original (84, 69) position.
+	local chipRow = Util.new("Frame", { BackgroundTransparency = 1, ClipsDescendants = true, Position = UDim2.fromOffset(82, 67), Size = UDim2.new(1, -90, 0, 20), Visible = false, ZIndex = 2, Parent = frame })
+	Util.new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2), Parent = chipRow })
 	Util.new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = chipRow })
 	local chipPool = {}
 	local steps = Util.new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 31), Size = UDim2.fromOffset(200, 18), Visible = false, ZIndex = 2, Parent = frame })
