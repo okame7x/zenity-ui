@@ -3007,10 +3007,10 @@ function Library:CreateWindow(opts)
 		BackgroundTransparency = 1,
 		Image = Assets.Sunburst,
 		ImageColor3 = Palettes.Purple.Rim,
-		ImageTransparency = 0.78,
+		ImageTransparency = 0.45,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromOffset(36, HEADER_HEIGHT / 2),
-		Size = UDim2.fromOffset(72, 72),
+		Size = UDim2.fromOffset(96, 96),
 		ZIndex = 12,
 		Parent = header,
 	})
@@ -3171,15 +3171,15 @@ function Library:CreateWindow(opts)
 		BackgroundTransparency = 1,
 		Image = Assets.Sunburst,
 		ImageColor3 = Palettes.Purple.Rim,
-		ImageTransparency = 0.8,
+		ImageTransparency = 0.35,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(84, 84),
+		Size = UDim2.fromScale(120 / 64, 120 / 64),
 		Parent = openHolder,
 	})
 
 	local openButton, openParts = Util.bevel(openHolder, { Palette = Palettes.Purple, Size = UDim2.fromScale(1, 1), StrokeThickness = 3, ZIndex = 3 })
-	local openLogo = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(54, 54), ScaleType = Enum.ScaleType.Fit, ZIndex = 6, Parent = openButton })
+	local openLogo = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5 - 2 / 64), Size = UDim2.fromScale(48 / 64, 48 / 64), ScaleType = Enum.ScaleType.Fit, ZIndex = 6, Parent = openButton })
 	Util.icon(openLogo, opts.OpenLogo or Assets.OpenLogo)
 	Library.TintLogo(openLogo)
 	self.OpenButton = openHolder
@@ -4198,6 +4198,12 @@ function Library:CreateStealPanel(opts)
 		local slot = copy:FindFirstChild("ImageLabel")
 		if slot and slot:IsA("ImageLabel") then
 			iconLabel = slot
+			-- The copied HUD template may use pixel offsets for a different device size.
+			-- Keep the replacement icon proportional to our live HUD-sized button.
+			iconLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+			iconLabel.Position = UDim2.fromScale(0.5, 0.5)
+			iconLabel.Size = UDim2.fromScale(0.74, 0.74)
+			iconLabel.ScaleType = Enum.ScaleType.Fit
 			if iconFallback then
 				iconFallback.Parent = copy
 			end
