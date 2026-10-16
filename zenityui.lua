@@ -3007,10 +3007,10 @@ function Library:CreateWindow(opts)
 		BackgroundTransparency = 1,
 		Image = Assets.Sunburst,
 		ImageColor3 = Palettes.Purple.Rim,
-		ImageTransparency = 0.45,
+		ImageTransparency = 0.78,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromOffset(36, HEADER_HEIGHT / 2),
-		Size = UDim2.fromOffset(96, 96),
+		Size = UDim2.fromOffset(72, 72),
 		ZIndex = 12,
 		Parent = header,
 	})
@@ -3171,15 +3171,15 @@ function Library:CreateWindow(opts)
 		BackgroundTransparency = 1,
 		Image = Assets.Sunburst,
 		ImageColor3 = Palettes.Purple.Rim,
-		ImageTransparency = 0.35,
+		ImageTransparency = 0.8,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(120, 120),
+		Size = UDim2.fromOffset(84, 84),
 		Parent = openHolder,
 	})
 
 	local openButton, openParts = Util.bevel(openHolder, { Palette = Palettes.Purple, Size = UDim2.fromScale(1, 1), StrokeThickness = 3, ZIndex = 3 })
-	local openLogo = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, -2), Size = UDim2.fromOffset(48, 48), ScaleType = Enum.ScaleType.Fit, ZIndex = 6, Parent = openButton })
+	local openLogo = Util.new("ImageLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(54, 54), ScaleType = Enum.ScaleType.Fit, ZIndex = 6, Parent = openButton })
 	Util.icon(openLogo, opts.OpenLogo or Assets.OpenLogo)
 	Library.TintLogo(openLogo)
 	self.OpenButton = openHolder
@@ -4103,11 +4103,6 @@ function Library:CreateStealPanel(opts)
 	Util.icon(emptyLogo, Library._logo or Assets.OpenLogo)
 	Library.TintLogo(emptyLogo)
 	Util.text(empty, { Text = opts.EmptyText or "Nothing here", TextSize = 14, Stroke = 2, TextColor3 = Theme.Muted, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 80), Size = UDim2.new(1, 0, 0, 24), ZIndex = 3 })
-	-- Egg count pill on the header's right.
-	local countPill, countText = Hud.pill(header, "0 EGGS", Hud.Gold, 0)
-	countPill.AnchorPoint = Vector2.new(1, 0)
-	countPill.Position = UDim2.new(1, -50, 0, 8)
-	countPill.ZIndex = 5
 	-- The featured card's rim breathes (stopped with ReducedMotion).
 	local glowClock = 0
 	table.insert(connections, runService.RenderStepped:Connect(function(deltaTime)
@@ -4244,11 +4239,6 @@ function Library:CreateStealPanel(opts)
 		useTemplate()
 		keepIcon()
 	end))
-	local badge = Util.new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -4, 0, 4), Size = UDim2.fromOffset(28, 28), BackgroundColor3 = Color3.fromRGB(230, 20, 40), BorderSizePixel = 0, ZIndex = 8, Parent = buttonHolder })
-	Util.corner(badge, 999)
-	Util.stroke(badge, Color3.new(1, 1, 1), 2)
-	local badgeText = Util.text(badge, { Text = "0", TextSize = 13, Stroke = 1.8, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 9 })
-	panel._badge, panel._badgeText = badge, badgeText
 	function panel:SetCollapsed(value)
 		panel.Collapsed = value == true
 		panel._slidingUntil = os.clock() + 0.4
@@ -4293,9 +4283,6 @@ function Library:CreateStealPanel(opts)
 	function panel:SetItems(items)
 		items = type(items) == "table" and items or {}
 		empty.Visible = #items == 0
-		countText.Text = #items .. (#items == 1 and " EGG" or " EGGS")
-		panel._badgeText.Text = #items > 99 and "99+" or tostring(#items)
-		panel._badge.Visible = #items > 0
 		for index, item in items do
 			local card = panel._cards[index]
 			if not card then
