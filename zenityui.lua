@@ -2912,8 +2912,9 @@ function Window:SetElementTransparency(alpha)
 		apply(object)
 	end
 	if not self._surfaceWatch then
+		-- Also catches a parked page coming back: its surfaces take the current alpha (0 included) as it shows.
 		self._surfaceWatch = self.Body.DescendantAdded:Connect(function(object)
-			if self._surfaceAlpha <= 0 then return end
+			if self._surfaceAlpha <= 0 and not Library.Surfaces[object] then return end
 			task.defer(function()
 				if object.Parent then apply(object) end
 			end)
@@ -3159,6 +3160,9 @@ function Library:CreateWindow(opts)
 		Parent = body,
 	})
 	self.Content = content
+	-- Pages of the tabs not on screen wait here, outside the window: hidden but parented, every one of them was
+	-- re-laid out on each frame the window moved (dragging doubled the frame time with ~7.5k idle instances).
+	self._parked = Instance.new("Folder")
 
 	-- Floating open button (logo on a purple bevel) while the window is hidden.
 	local openHolder = Util.new("Frame", {
@@ -3306,9 +3310,8 @@ function Window:CreateTab(opts, icon)
 		ScrollBarThickness = 5,
 		ScrollBarImageColor3 = Theme.Accent,
 		ScrollingDirection = Enum.ScrollingDirection.Y,
-		Visible = false,
 		ZIndex = 2,
-		Parent = self.Content,
+		Parent = self._parked,
 	})
 	page:SetAttribute("NoDrag", true)
 	Util.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 10), Parent = page })
@@ -3343,7 +3346,7 @@ function Window:SelectTab(target)
 	local previous = self.CurrentTab
 	self.CurrentTab = target
 	if previous then
-		previous.Page.Visible = false
+		previous.Page.Parent = self._parked
 		Util.tween(previous._idle, 0.15, { BackgroundTransparency = 0 })
 		previous._caption.TextColor3 = Library.ThemeBind(previous._caption, "TextColor3", Theme.Muted)
 		-- An icon tint stays on the tabs that are not picked too (a little dimmer), instead of falling back to grey.
@@ -3357,7 +3360,7 @@ function Window:SelectTab(target)
 	target._icon:SetAttribute("ZenitySelected", true)
 	target._icon.ImageColor3 = Library.ThemeBind(target._icon, "ImageColor3", Library.TabIconColor(true))
 	-- The page appears in place: sliding it re-laid out the whole page every frame of the tween.
-	target.Page.Visible = true
+	target.Page.Parent = self.Content
 	target._parts.scale.Scale = 0.92
 	Util.tween(target._parts.scale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
 end
@@ -3376,6 +3379,7 @@ function Window:Destroy()
 	if self.Gui then
 		self.Gui:Destroy()
 	end
+	self._parked:Destroy()
 end
 
 -- ============================================================================================================
