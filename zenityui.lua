@@ -620,6 +620,9 @@ function Util.aboveHud(target, gui, connections, resolve, resized)
 		return object.Parent ~= nil
 	end
 	local function update()
+		-- Hidden opener (window open): no HUD lookups and no Absolute* reads, which force a layout pass every frame
+		-- while the window moves (drag, open / close, tab switch).
+		if not target.Visible then return end
 		local ok, top, below = pcall(resolve)
 		if not ok or typeof(top) ~= "Instance" or not top:IsA("GuiObject") or not visible(top) then return end
 		local size, position = top.AbsoluteSize, top.AbsolutePosition
@@ -713,8 +716,9 @@ function Util.drag(handle, target, connections)
 		-- The anchor point stays on screen (40px from the sides, 20px from top / bottom).
 		local delta = latest - startInput
 		latest = nil
-		local gui = target:FindFirstAncestorWhichIsA("ScreenGui")
-		local screen = gui and gui.AbsoluteSize or BASE_VIEWPORT
+		-- Viewport from the camera: reading the ScreenGui's AbsoluteSize right after a move forces an extra layout pass.
+		local camera = workspace.CurrentCamera
+		local screen = camera and camera.ViewportSize or BASE_VIEWPORT
 		local offsetX, offsetY = startPosition.X.Offset + delta.X, startPosition.Y.Offset + delta.Y
 		local x = startPosition.X.Scale * screen.X + offsetX
 		local y = startPosition.Y.Scale * screen.Y + offsetY
@@ -3215,9 +3219,6 @@ function Library:CreateWindow(opts)
 		image.Rotation = (image.Rotation + 20 * deltaTime) % 360
 	end))
 
-	-- Intro: the same short slide as opening (no scaling of the whole window).
-	main.Position = UDim2.new(0.5, 0, 0.5, 18)
-	Util.tween(main, 0.2, { Position = UDim2.fromScale(0.5, 0.5) })
 	return self
 end
 
@@ -3232,28 +3233,9 @@ function Window:Toggle(open)
 		return
 	end
 	self.Visible = open
-	self._toggleId = (self._toggleId or 0) + 1
-	local id = self._toggleId
-	-- Open / close slide the window a few pixels at its final size (and fade the shadow). Scaling the whole window
-	-- re-laid-out and re-rasterized every text in it each frame, which is what dropped frames on open.
-	local rest, below = UDim2.fromScale(0.5, 0.5), UDim2.new(0.5, 0, 0.5, 18)
-	if open then
-		self.OpenButton.Visible = false
-		self.Main.Position = below
-		self.Shadow.ImageTransparency = 1
-		self.Root.Visible = true
-		Util.tween(self.Main, 0.18, { Position = rest })
-		Util.tween(self.Shadow, 0.18, { ImageTransparency = 0.45 })
-	else
-		Util.tween(self.Main, 0.14, { Position = below }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		Util.tween(self.Shadow, 0.14, { ImageTransparency = 1 })
-		task.delay(0.14, function()
-			if self._toggleId == id and not self.Visible then
-				self.Root.Visible = false
-				self.OpenButton.Visible = true
-			end
-		end)
-	end
+	-- Instant show / hide: any slide moves the whole window, and every frame of it re-lays out everything inside.
+	self.Root.Visible = open
+	self.OpenButton.Visible = not open
 end
 
 function Window:SetKeybind(keyCode)
@@ -3374,11 +3356,8 @@ function Window:SelectTab(target)
 	target._caption.TextColor3 = Library.ThemeBind(target._caption, "TextColor3", Theme.Text)
 	target._icon:SetAttribute("ZenitySelected", true)
 	target._icon.ImageColor3 = Library.ThemeBind(target._icon, "ImageColor3", Library.TabIconColor(true))
-	-- New page slides up a little and fades its rows in.
-	local page = target.Page
-	page.Visible = true
-	page.Position = UDim2.fromOffset(0, 14)
-	Util.tween(page, 0.25, { Position = UDim2.new() }, Enum.EasingStyle.Quint)
+	-- The page appears in place: sliding it re-laid out the whole page every frame of the tween.
+	target.Page.Visible = true
 	target._parts.scale.Scale = 0.92
 	Util.tween(target._parts.scale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
 end
